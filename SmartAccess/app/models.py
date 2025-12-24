@@ -143,7 +143,6 @@ class Visitor(Base):
     is_checked_out = Column(Boolean, default=False, index=True)
     qr_code_path = Column(String(255))
     qr_code_expires_at = Column(DateTime)
-    qr_code_image = Column(LargeBinary, nullable=True)  # 二维码图片二进制，直接存库
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     
     # 访客权限信息
@@ -239,6 +238,22 @@ class HardwareDevice(Base):
     # IP 地址和端口（用于网络设备）
     ip_address = Column(String(45))
     port = Column(Integer)
+
+
+class NFCTask(Base):
+    """NFC 命令/任务表，用于 Web -> 设备 的即时命令交互（例如触发一次扫描）。"""
+    __tablename__ = "nfc_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(50), index=True)  # 目标设备 id
+    command = Column(String(50), nullable=False)  # e.g., 'SCAN'
+    payload = Column(Text, nullable=True)  # 可选的命令负载（JSON）
+    status = Column(String(20), default="pending")  # pending, sent, done, canceled
+    result = Column(Text, nullable=True)  # 设备执行后的返回内容（JSON/text）
+    created_at = Column(DateTime, default=datetime.utcnow)
+    sent_at = Column(DateTime)
+    consumed_at = Column(DateTime)
+
 
 
 class SystemLog(Base):

@@ -8,6 +8,7 @@ from app.utils import check_permission_valid
 from datetime import datetime, timedelta
 from typing import List, Optional
 from pydantic import BaseModel
+from fastapi import Request
 
 router = APIRouter(
     prefix="/api/hardware",
@@ -40,14 +41,14 @@ class HardwareDeviceResponse(BaseModel):
     device_id: str
     device_name: str
     device_type: str
-    location: str = None
+    location: Optional[str] = None
     is_active: bool
-    last_heartbeat: Optional[datetime]
-    connection_status: str = None
+    last_heartbeat: Optional[datetime] = None
+    connection_status: Optional[str] = None
     created_at: datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 class AccessLogResponse(BaseModel):
@@ -60,7 +61,7 @@ class AccessLogResponse(BaseModel):
     details: str = None
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 # ======================== NFC 卡片模型 ========================
@@ -94,7 +95,7 @@ class NFCCardResponse(BaseModel):
     daily_use_count: int
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 # ======================== 蓝牙设备模型 ========================
@@ -130,7 +131,7 @@ class BluetoothBindingResponse(BaseModel):
     max_daily_uses: int
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 # ==================== 硬件设备管理 ====================
@@ -390,6 +391,183 @@ def nfc_access(card_number: str, device_id: str, db: Session = Depends(get_db)):
         "user_id": user.id,
         "user_name": user.full_name or user.username
     }
+
+
+# ==================== PN532 / 设备 对接：主动上报扫描结果 ====================
+
+
+class NFCScanRequest(BaseModel):
+    card_uid: str
+    device_id: Optional[str] = None
+
+
+@router.post("/nfc-scan")
+def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db)):
+    """供设备（ESP8266）上报读取到的卡号。返回 action: OPEN/DENY 和 message。
+
+    设备会 POST JSON {"card_uid":"AA-BB-CC-...","device_id":"nfc_reader_01"}
+    """
+    card_uid = req.card_uid.strip().upper()
+    device_id = req.device_id or request.client.host
+
+    # 检查是否存在未完成的 NFCTask（最近 30 秒内）并将结果挂到任务上
+    task = db.query(__import__('app.models').NFCTask).filter(
+        __import__('app.models').NFCTask.device_id == device_id,
+        __import__('app.models').NFCTask.status.in_(["pending", "sent"])
+    ).order_by(__import__('app.models').NFCTask.created_at.desc()).first()
+
+    # 查找卡片
+    card = db.query(NFCCard).filter(NFCCard.card_number == card_uid).first()
+
+    if not card:
+        # 记录日志并可能关联任务
+        access_log = AccessLog(
+            user_id=None,
+            access_type="nfc",
+            status="failed",
+            device_id=device_id,
+            details=f"Unknown NFC card: {card_uid}"
+        )
+        db.add(access_log)
+        if task:
+            task.status = "done"
+            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"unknown\"}}"
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {"action": "DENY", "msg": "未知卡片"}
+
+    # 校验卡片是否启用/时效等
+    if not card.is_active:
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type="nfc",
+            status="denied",
+            device_id=device_id,
+            details="Card disabled"
+        )
+        db.add(access_log)
+        if task:
+            task.status = "done"
+            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"disabled\"}}"
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {"action": "DENY", "msg": "卡片已被禁用"}
+
+    if not check_permission_valid(card.permission_start_date, card.permission_end_date):
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type="nfc",
+            status="denied",
+            device_id=device_id,
+            details="Card permission expired"
+        )
+        db.add(access_log)
+        if task:
+            task.status = "done"
+            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"expired\"}}"
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {"action": "DENY", "msg": "卡片权限已过期"}
+
+    # 成功：记录日志，更新统计，关联任务
+    access_log = AccessLog(
+        user_id=card.user_id,
+        access_type="nfc",
+        status="success",
+        device_id=device_id,
+        details=f"NFC card access - Card: {card.card_name or card.card_number}"
+    )
+    db.add(access_log)
+
+    card.daily_use_count += 1
+    card.last_use_date = datetime.utcnow()
+
+    if task:
+        task.status = "done"
+        task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"success\",\"user_id\":{card.user_id}}}"
+        task.consumed_at = datetime.utcnow()
+
+    db.commit()
+
+    user = card.user
+    return {"action": "OPEN", "msg": f"欢迎 {user.full_name or user.username}"}
+
+
+# ==================== Web -> 设备 的命令队列（用于点击触发扫描） ====================
+
+
+class NFCTaskCreate(BaseModel):
+    device_id: str
+    command: str = "SCAN"
+    payload: Optional[str] = None
+
+
+class NFCTaskResponse(BaseModel):
+    id: int
+    device_id: str
+    command: str
+    status: str
+    created_at: datetime
+    sent_at: Optional[datetime]
+    consumed_at: Optional[datetime]
+    result: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+
+@router.post("/nfc/command", response_model=NFCTaskResponse)
+def create_nfc_command(task_in: NFCTaskCreate, db: Session = Depends(get_db)):
+    """Web 后台创建一个 NFC 任务（通常是 SCAN），设备会轮询并执行。"""
+    Task = __import__('app.models').NFCTask
+    task = Task(
+        device_id=task_in.device_id,
+        command=task_in.command,
+        payload=task_in.payload,
+        status="pending",
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+@router.get("/nfc/command/poll")
+def poll_nfc_command(device_id: str, db: Session = Depends(get_db)):
+    """设备轮询此接口以获取待执行命令。返回最近一个 pending 的命令并标记为 sent。"""
+    Task = __import__('app.models').NFCTask
+    task = db.query(Task).filter(
+        Task.device_id == device_id,
+        Task.status == "pending"
+    ).order_by(Task.created_at.asc()).first()
+    if not task:
+        return {"has_command": False}
+
+    task.status = "sent"
+    task.sent_at = datetime.utcnow()
+    db.commit()
+    return {
+        "has_command": True,
+        "task_id": task.id,
+        "command": task.command,
+        "payload": task.payload
+    }
+
+
+@router.get("/nfc/command/status/{task_id}")
+def get_nfc_command_status(task_id: int, db: Session = Depends(get_db)):
+    Task = __import__('app.models').NFCTask
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {
+        "id": task.id,
+        "status": task.status,
+        "result": task.result,
+        "created_at": task.created_at,
+        "consumed_at": task.consumed_at
+    }
+
 
 
 # ==================== 蓝牙设备管理 ====================

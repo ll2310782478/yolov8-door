@@ -25,8 +25,10 @@ import time
 import logging
 from typing import Dict, List, Tuple, Optional
 from ultralytics import YOLO
-import insightface
 import warnings
+
+# 懒加载 insightface（解决导入问题）
+insightface = None
 
 # 抑制警告
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -103,9 +105,15 @@ class FaceRecognitionService:
             logger.error(f"❌ YOLO 模型加载失败: {e}")
             raise
 
-    def _init_insightface(self) -> insightface.app.FaceAnalysis:
+    def _init_insightface(self):
         """初始化 InsightFace 人脸识别引擎"""
+        global insightface
         try:
+            # 懒加载 insightface
+            if insightface is None:
+                import insightface as _insightface
+                insightface = _insightface
+            
             face_app = insightface.app.FaceAnalysis()
             ctx_id = 0 if self.device == 'cuda' else -1
             face_app.prepare(ctx_id=ctx_id, det_size=(320, 320))

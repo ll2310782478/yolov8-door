@@ -57,12 +57,6 @@ def web_hardware():
     return load_template("hardware.html")
 
 
-@router.get("/nfc", response_class=HTMLResponse)
-def web_nfc():
-    """NFC 管理页面"""
-    return load_template("nfc.html")
-
-
 @router.get("/logs", response_class=HTMLResponse)
 def web_logs():
     """访问日志页面"""

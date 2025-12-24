@@ -1,8 +1,10 @@
-# SmartAccess - 智能人脸识别门禁系统
+# SmartAccess v2.0 - 智能人脸识别门禁系统
+
+🚀 **[完整文档请查看 DOCUMENTATION.md](DOCUMENTATION.md)** ← 详细的安装、API、功能说明都在这里
 
 ## 📋 项目介绍
 
-SmartAccess 是一个基于 FastAPI 的现代化人脸识别门禁管理系统，提供完整的用户管理、门禁控制、访客管理等功能。
+SmartAccess v2.0 是一个基于 FastAPI 的现代化**智能人脸识别门禁管理系统**。系统采用**基于角色的权限控制（RBAC）**，支持多种认证方式（人脸、NFC、蓝牙、二维码），提供完整的用户管理、权限控制、访客管理等功能。
 
 ## ✨ 主要功能
 
@@ -77,74 +79,41 @@ SmartAccess/
 
 ## 🚀 快速开始
 
-### 1. 安装依赖
+> ⚠️ **详细的安装、配置、API 使用说明请参考 [DOCUMENTATION.md](DOCUMENTATION.md)**
 
-```bash
+### 快速启动（3 步）
+
+```powershell
+# 1. 安装依赖
 pip install -r requirements.txt
+
+# 2. 创建管理员账户
+python create_admin.py --create
+
+# 3. 启动应用
+python -m uvicorn app.main:app --port 8000 --host 127.0.0.1
 ```
 
-### 2. 配置环境
+访问应用：
 
-编辑 `.env` 文件，配置数据库和应用参数：
-
-```env
-DATABASE_URL=sqlite:///./smartaccess.db
-APP_NAME=SmartAccess
-DEBUG=True
-SECRET_KEY=your-secret-key-here
-FACE_RECOGNITION_MODEL=face_recognition
-CONFIDENCE_THRESHOLD=0.6
-VISITOR_QR_EXPIRES_HOURS=24
+```
+主页:       http://localhost:8000/
+API 文档:   http://localhost:8000/docs
+登录页面:   http://localhost:8000/web/auth
 ```
 
-### 3. 启动应用
+## 📡 API 端点概览
 
-```bash
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
+| 模块 | 路由前缀 | 功能 | 端点数 |
+|-----|---------|------|--------|
+| 认证 | `/api/auth` | 用户登录、登出、获取信息 | 3 |
+| 用户 | `/api/users` | 用户管理、人脸管理、权限检查 | 13 |
+| NFC | `/api/hardware/nfc` | NFC 卡片管理、访问验证 | 8 |
+| 蓝牙 | `/api/hardware/bluetooth` | 蓝牙设备管理、远程开锁 | 9 |
+| 硬件 | `/api/hardware` | 设备管理、日志记录、统计 | 10 |
+| 访客 | `/api/visitors` | 访客管理、二维码、入离场 | 15 |
 
-应用将在 `http://localhost:8000` 启动
-
-### 4. 访问接口
-
-- **主页**: http://localhost:8000/
-- **Swagger API 文档**: http://localhost:8000/docs
-- **ReDoc API 文档**: http://localhost:8000/redoc
-- **用户管理页面**: http://localhost:8000/app/templates/users.html
-- **访客管理页面**: http://localhost:8000/app/templates/visitors.html
-
-## 📡 API 端点
-
-### 用户管理 (`/api/users`)
-
-| 方法 | 端点 | 描述 |
-|------|------|------|
-| GET | `/` | 获取所有用户 |
-| POST | `/` | 创建新用户 |
-| GET | `/{user_id}` | 获取用户信息 |
-| PUT | `/{user_id}` | 更新用户信息 |
-| DELETE | `/{user_id}` | 删除用户 |
-| POST | `/{user_id}/faces` | 上传人脸照片 |
-| GET | `/{user_id}/faces` | 获取用户人脸列表 |
-| DELETE | `/{user_id}/faces/{face_id}` | 删除人脸照片 |
-| GET | `/{user_id}/role` | 获取用户权限 |
-| POST | `/{user_id}/role` | 分配用户权限 |
-
-### 硬件管理 (`/api/hardware`)
-
-| 方法 | 端点 | 描述 |
-|------|------|------|
-| GET | `/devices` | 获取所有设备 |
-| POST | `/devices` | 注册新设备 |
-| PUT | `/devices/{device_id}` | 更新设备信息 |
-| POST | `/devices/{device_id}/heartbeat` | 设备心跳 |
-| POST | `/nfc/access` | NFC 门禁访问 |
-| POST | `/bluetooth/access` | 蓝牙门禁访问 |
-| GET | `/logs` | 获取访问日志 |
-| GET | `/logs/user/{user_id}` | 获取用户日志 |
-| GET | `/logs/device/{device_id}` | 获取设备日志 |
-
-### 访客管理 (`/api/visitors`)
+**详见 [DOCUMENTATION.md - API 参考](DOCUMENTATION.md#api-参考)** 中的完整 API 文档
 
 | 方法 | 端点 | 描述 |
 |------|------|------|

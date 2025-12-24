@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Visitor, VisitorPermission, AccessLog
-from app.utils import check_permission_valid
+from app.utils import check_permission_valid, delete_file
 from datetime import datetime, timedelta
 from typing import List, Optional
 from pydantic import BaseModel
@@ -90,8 +90,11 @@ class SendQRCodeRequest(BaseModel):
 
 # ==================== 访客管理端点 ====================
 
-def generate_qrcode(content: str) -> bytes:
-    """生成二维码并返回 PNG 二进制数据（不写文件）。"""
+def generate_qrcode(content: str) -> str:
+    """生成二维码"""
+    qrcode_dir = "static/qrcodes"
+    os.makedirs(qrcode_dir, exist_ok=True)
+    
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -100,13 +103,13 @@ def generate_qrcode(content: str) -> bytes:
     )
     qr.add_data(content)
     qr.make(fit=True)
-
+    
     img = qr.make_image(fill_color="black", back_color="white")
-    from io import BytesIO
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf.read()
+    filename = f"visitor_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.png"
+    qrcode_path = os.path.join(qrcode_dir, filename)
+    img.save(qrcode_path)
+    
+    return qrcode_path
 
 
 @router.post("/", response_model=VisitorResponse)
@@ -128,11 +131,10 @@ def create_visitor(visitor: VisitorCreate, db: Session = Depends(get_db)):
     db.add(db_visitor)
     db.flush()
     
-    # 生成二维码（保存为二进制到数据库）
+    # 生成二维码
     qr_content = f"VISITOR:{db_visitor.id}:{uuid.uuid4().hex}"
-    qr_bytes = generate_qrcode(qr_content)
-    db_visitor.qr_code_image = qr_bytes
-    db_visitor.qr_code_path = None
+    qrcode_path = generate_qrcode(qr_content)
+    db_visitor.qr_code_path = qrcode_path
     
     # 创建权限记录
     permission = VisitorPermission(
@@ -210,9 +212,9 @@ def delete_visitor(visitor_id: int, db: Session = Depends(get_db)):
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
     
-    # 清除二维码二进制（如果存在）并删除访客记录
-    visitor.qr_code_image = None
-    visitor.qr_code_path = None
+    # 删除二维码文件
+    delete_file(visitor.qr_code_path)
+    
     db.delete(visitor)
     db.commit()
     return {"message": "访客已删除"}
@@ -236,25 +238,16 @@ def get_visitor_qrcode(visitor_id: int, db: Session = Depends(get_db)):
     
     if not permission:
         raise HTTPException(status_code=404, detail="访客二维码已过期或不存在")
-
-    # 如果二维码二进制不存在，则生成并保存到数据库
-    if not visitor.qr_code_image:
-        qr_bytes = generate_qrcode(permission.qr_code_token)
-        visitor.qr_code_image = qr_bytes
-        visitor.qr_code_path = None
+    
+    if not visitor.qr_code_path or not os.path.exists(visitor.qr_code_path):
+        qrcode_path = generate_qrcode(permission.qr_code_token)
+        visitor.qr_code_path = qrcode_path
         db.commit()
-
-    # 返回 base64 数据 URL 以便前端直接显示
-    import base64
-    data_url = None
-    if visitor.qr_code_image:
-        b64 = base64.b64encode(visitor.qr_code_image).decode('ascii')
-        data_url = f"data:image/png;base64,{b64}"
-
+    
     return {
         "visitor_id": visitor_id,
         "visitor_name": visitor.name,
-        "qrcode_base64": data_url,
+        "qrcode_path": visitor.qr_code_path,
         "qrcode_token": permission.qr_code_token,
         "expires_at": permission.expires_at,
         "accessed_count": permission.accessed_count
@@ -524,11 +517,10 @@ def batch_create_visitors(visitors_data: List[VisitorCreate], db: Session = Depe
         db.add(db_visitor)
         db.flush()
         
-        # 生成二维码并保存到数据库
+        # 生成二维码
         qr_content = f"VISITOR:{db_visitor.id}:{uuid.uuid4().hex}"
-        qr_bytes = generate_qrcode(qr_content)
-        db_visitor.qr_code_image = qr_bytes
-        db_visitor.qr_code_path = None
+        qrcode_path = generate_qrcode(qr_content)
+        db_visitor.qr_code_path = qrcode_path
         
         # 创建权限
         permission = VisitorPermission(
