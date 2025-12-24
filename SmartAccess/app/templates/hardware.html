@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>硬件管理 - SmartAccess</title>
+    <style>
+        :root { --primary:#667eea; --bg:#f7fafc; }
+        * { box-sizing:border-box; }
+        body { margin:0; background:var(--bg); font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color:#1a202c; }
+        nav { background:#fff; border-bottom:1px solid #e2e8f0; padding:1rem 2rem; display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:10;}
+        nav .left { display:flex; gap:1rem; align-items:center;}
+        nav .brand { font-weight:700; color:var(--primary); }
+        nav .links { display:flex; gap:0.75rem; align-items:center;}
+        nav a, nav button { text-decoration:none; color:#1a202c; background:#edf2f7; padding:0.55rem 0.9rem; border-radius:8px; border:none; cursor:pointer; }
+        main { max-width:1180px; margin:1.5rem auto; padding:0 1.25rem; display:grid; gap:1rem; grid-template-columns:1.4fr 1fr; }
+        .card { background:#fff; border-radius:14px; padding:1.25rem 1.5rem; box-shadow:0 10px 30px rgba(0,0,0,0.06); }
+        h2 { margin:0 0 1rem 0; }
+        label { font-weight:600; color:#2d3748; display:block; margin:0.4rem 0 0.2rem; }
+        input, select { width:100%; padding:0.65rem 0.75rem; border:1px solid #e2e8f0; border-radius:8px; }
+        button.primary { background:var(--primary); color:#fff; border:none; padding:0.7rem 1rem; border-radius:10px; cursor:pointer; }
+        button.ghost { background:#edf2f7; border:none; padding:0.7rem 1rem; border-radius:10px; cursor:pointer; }
+        .status { margin-top:0.75rem; padding:0.75rem; border-radius:10px; background:#edf2f7; color:#1a202c; }
+        .status.good { background:#e6fffa; color:#047857; }
+        .status.bad { background:#fef2f2; color:#b91c1c; }
+        table { width:100%; border-collapse:collapse; margin-top:0.5rem; }
+        th, td { padding:0.65rem; border-bottom:1px solid #e2e8f0; text-align:left; }
+        th { background:#f8fafc; }
+        .section { margin-top:1.4rem; }
+        .row { display:flex; gap:0.5rem; flex-wrap:wrap; }
+        .half { flex:1 1 48%; min-width:260px; }
+        .actions { display:flex; gap:0.35rem; flex-wrap:wrap; }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="left">
+            <div class="brand">🔐 SmartAccess</div>
+            <div class="links">
+                <a href="/web/dashboard">控制台</a>
+                <a href="/web/users">用户管理</a>
+                <a href="/web/visitors">访客管理</a>
+                <a href="/web/face">人脸识别</a>
+            </div>
+        </div>
+        <div class="links">
+            <span id="welcome" style="color:#4a5568;"></span>
+            <button onclick="logout()">退出登录</button>
+        </div>
+    </nav>
+
+    <main>
+        <div class="card">
+            <h2>硬件设备列表</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>设备ID</th>
+                        <th>名称</th>
+                        <th>类型</th>
+                        <th>位置</th>
+                        <th>状态</th>
+                        <th>最后心跳</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="deviceBody"></tbody>
+            </table>
+            <div id="status" class="status">等待加载...</div>
+        </div>
+
+        <div class="card">
+            <h2>注册新设备</h2>
+            <label>设备ID</label>
+            <input id="d_id" placeholder="door-lock-1">
+            <label>设备名称</label>
+            <input id="d_name" placeholder="西侧门锁">
+            <label>类型</label>
+            <select id="d_type">
+                <option value="door_lock">door_lock</option>
+                <option value="nfc_reader">nfc_reader</option>
+                <option value="bluetooth_scanner">bluetooth_scanner</option>
+                <option value="camera">camera</option>
+            </select>
+            <label>位置</label>
+            <input id="d_loc" placeholder="一楼大门">
+            <label>IP 地址 (可选)</label>
+            <input id="d_ip" placeholder="192.168.1.10">
+            <label>端口 (可选)</label>
+            <input id="d_port" type="number" min="1" max="65535">
+                <button class="primary" style="margin-top:0.8rem;" onclick="createDevice()">注册</button>
+            <div class="status" id="formStatus" style="margin-top:0.75rem;">填写后点击注册</div>
+
+            <div class="section">
+                <h2>蓝牙绑定与远程开门</h2>
+                <div class="row">
+                    <div class="half">
+                        <label>用户ID</label>
+                        <input id="bt_user" placeholder="用户ID">
+                    </div>
+                    <div class="half">
+                        <label>设备ID</label>
+                        <input id="bt_device" placeholder="door-lock-1">
+                    </div>
+                </div>
+                <label>设备名称(可选)</label>
+                <input id="bt_name" placeholder="蓝牙门锁">
+                <button class="ghost" style="margin-top:0.6rem;" onclick="bindBluetooth()">创建/更新绑定</button>
+                <button class="primary" style="margin-top:0.4rem;" onclick="unlockBluetooth()">蓝牙远程开门</button>
+                <button class="ghost" style="margin-top:0.4rem;" onclick="loadBt()">刷新绑定列表</button>
+                <div class="status" id="btStatus" style="margin-top:0.6rem;">填写信息后操作</div>
+                <table>
+                    <thead><tr><th>ID</th><th>设备</th><th>用户</th><th>状态</th><th>操作</th></tr></thead>
+                    <tbody id="btBody"></tbody>
+                </table>
+            </div>
+
+            <div class="section">
+                <h2>NFC 卡片管理</h2>
+                <div class="row">
+                    <div class="half">
+                        <label>用户ID</label>
+                        <input id="nfc_user" placeholder="用户ID">
+                    </div>
+                    <div class="half">
+                        <label>卡号</label>
+                        <input id="nfc_card" placeholder="卡号">
+                    </div>
+                </div>
+                <label>卡片名称(可选)</label>
+                <input id="nfc_name" placeholder="工牌">
+                <button class="primary" style="margin-top:0.6rem;" onclick="addNfc()">添加卡片</button>
+                <button class="ghost" style="margin-top:0.4rem;" onclick="loadNfc()">刷新列表</button>
+                <table>
+                    <thead><tr><th>ID</th><th>卡号</th><th>用户</th><th>状态</th><th>操作</th></tr></thead>
+                    <tbody id="nfcBody"></tbody>
+                </table>
+                <div class="status" id="nfcStatus" style="margin-top:0.6rem;">等待操作</div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const token = localStorage.getItem('smartaccess_token');
+        const username = localStorage.getItem('smartaccess_username');
+        if (!token) { window.location.href = '/web/auth'; }
+        else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
+
+        function logout() {
+            localStorage.removeItem('smartaccess_token');
+            localStorage.removeItem('smartaccess_username');
+            window.location.href = '/web/auth';
+        }
+        function authHeaders(extra = {}) { return { 'Authorization': `Bearer ${token}`, ...extra }; }
+        function setStatus(msg, good=false, bad=false) {
+            const box = document.getElementById('status');
+            box.textContent = msg;
+            box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
+        }
+        function setFormStatus(msg, good=false, bad=false) {
+            const box = document.getElementById('formStatus');
+            box.textContent = msg;
+            box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
+        }
+        function setBtStatus(msg, good=false, bad=false) {
+            const box = document.getElementById('btStatus');
+            box.textContent = msg;
+            box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
+        }
+        function setNfcStatus(msg, good=false, bad=false) {
+            const box = document.getElementById('nfcStatus');
+            box.textContent = msg;
+            box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
+        }
+
+        async function loadDevices() {
+            try {
+                const res = await fetch('/api/hardware/devices', { headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '加载设备失败');
+                const body = document.getElementById('deviceBody');
+                body.innerHTML = '';
+                if (!data.length) {
+                    body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#718096;">暂无设备</td></tr>';
+                }
+                data.forEach(d => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${d.device_id}</td>
+                        <td>${d.device_name || '-'}</td>
+                        <td>${d.device_type}</td>
+                        <td>${d.location || '-'}</td>
+                        <td>${d.is_active ? '在线/启用' : '禁用'} ${d.connection_status ? ' ('+d.connection_status+')' : ''}</td>
+                        <td>${d.last_heartbeat ? new Date(d.last_heartbeat).toLocaleString('zh-CN') : '-'}</td>
+                        <td class="actions">
+                            <button class="ghost" onclick="toggleDevice('${d.device_id}', ${!d.is_active})">${d.is_active ? '禁用' : '启用'}</button>
+                        </td>
+                    `;
+                    body.appendChild(tr);
+                });
+                setStatus('设备加载完成', true);
+            } catch (e) {
+                setStatus(e.message, false, true);
+            }
+        }
+
+        async function createDevice() {
+            const payload = {
+                device_id: document.getElementById('d_id').value.trim(),
+                device_name: document.getElementById('d_name').value.trim(),
+                device_type: document.getElementById('d_type').value,
+                location: document.getElementById('d_loc').value.trim(),
+                ip_address: document.getElementById('d_ip').value.trim() || null,
+                port: document.getElementById('d_port').value ? Number(document.getElementById('d_port').value) : null,
+            };
+            if (!payload.device_id || !payload.device_name) {
+                setFormStatus('设备ID和名称必填', false, true);
+                return;
+            }
+            try {
+                const res = await fetch('/api/hardware/devices', {
+                    method:'POST',
+                    headers: { 'Content-Type':'application/json', ...authHeaders() },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '注册失败');
+                setFormStatus('注册成功', true);
+                loadDevices();
+            } catch (e) {
+                setFormStatus(e.message, false, true);
+            }
+        }
+
+        async function toggleDevice(device_id, enable) {
+            try {
+                const res = await fetch(`/api/hardware/devices/${device_id}`, {
+                    method:'PUT',
+                    headers:{ 'Content-Type':'application/json', ...authHeaders() },
+                    body: JSON.stringify({ is_active: enable })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '更新失败');
+                setStatus('已更新设备状态', true);
+                loadDevices();
+            } catch (e) {
+                setStatus(e.message, false, true);
+            }
+        }
+
+        async function loadBt() {
+            try {
+                const res = await fetch('/api/hardware/bluetooth/binding', { headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '加载失败');
+                const body = document.getElementById('btBody');
+                body.innerHTML = '';
+                if (!data.length) {
+                    body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#718096;">暂无绑定</td></tr>';
+                }
+                data.forEach(b => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${b.id}</td>
+                        <td>${b.device_id}</td>
+                        <td>${b.user_id}</td>
+                        <td>${b.is_active ? '启用' : '禁用'}</td>
+                        <td class="actions">
+                            <button class="ghost" onclick="toggleBt(${b.id}, ${!b.is_active})">${b.is_active ? '禁用' : '启用'}</button>
+                            <button class="ghost" onclick="deleteBt(${b.id})">删除</button>
+                        </td>
+                    `;
+                    body.appendChild(tr);
+                });
+                setBtStatus('绑定列表加载完成', true);
+            } catch (e) {
+                setBtStatus(e.message, false, true);
+            }
+        }
+
+        async function toggleBt(id, enable) {
+            try {
+                const res = await fetch(`/api/hardware/bluetooth/binding/${id}`, {
+                    method:'PUT',
+                    headers:{ 'Content-Type':'application/json', ...authHeaders() },
+                    body: JSON.stringify({ is_active: enable })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '更新失败');
+                setBtStatus('已更新绑定状态', true);
+                loadBt();
+            } catch (e) {
+                setBtStatus(e.message, false, true);
+            }
+        }
+
+        async function deleteBt(id) {
+            if (!confirm('确定删除此绑定？')) return;
+            try {
+                const res = await fetch(`/api/hardware/bluetooth/binding/${id}`, { method:'DELETE', headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '删除失败');
+                setBtStatus('删除成功', true);
+                loadBt();
+            } catch (e) {
+                setBtStatus(e.message, false, true);
+            }
+        }
+
+        async function bindBluetooth() {
+            const user_id = document.getElementById('bt_user').value.trim();
+            const device_id = document.getElementById('bt_device').value.trim();
+            const device_name = document.getElementById('bt_name').value.trim();
+            if (!user_id || !device_id) return setBtStatus('用户ID和设备ID必填', false, true);
+            const payload = { user_id: Number(user_id), device_id, device_name: device_name || null, is_paired: true };
+            try {
+                const res = await fetch('/api/hardware/bluetooth/binding', {
+                    method:'POST',
+                    headers: { 'Content-Type':'application/json', ...authHeaders() },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '绑定失败');
+                setBtStatus('绑定/更新成功', true);
+            } catch (e) {
+                setBtStatus(e.message, false, true);
+            }
+        }
+
+        async function unlockBluetooth() {
+            const user_id = document.getElementById('bt_user').value.trim();
+            const device_id = document.getElementById('bt_device').value.trim();
+            if (!user_id || !device_id) return setBtStatus('用户ID和设备ID必填', false, true);
+            try {
+                const url = `/api/hardware/bluetooth/unlock?user_id=${encodeURIComponent(user_id)}&device_id=${encodeURIComponent(device_id)}`;
+                const res = await fetch(url, { method:'POST', headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok || data.status !== 'success') throw new Error(data.message || '开门失败');
+                setBtStatus('远程开门成功', true);
+            } catch (e) {
+                setBtStatus(e.message, false, true);
+            }
+        }
+
+        async function addNfc() {
+            const user_id = document.getElementById('nfc_user').value.trim();
+            const card_number = document.getElementById('nfc_card').value.trim();
+            const card_name = document.getElementById('nfc_name').value.trim();
+            if (!user_id || !card_number) return setNfcStatus('用户ID和卡号必填', false, true);
+            const payload = { user_id: Number(user_id), card_number, card_name: card_name || null };
+            try {
+                const res = await fetch('/api/hardware/nfc/cards', {
+                    method:'POST',
+                    headers: { 'Content-Type':'application/json', ...authHeaders() },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '添加失败');
+                setNfcStatus('添加成功', true);
+                loadNfc();
+            } catch (e) {
+                setNfcStatus(e.message, false, true);
+            }
+        }
+
+        async function loadNfc() {
+            try {
+                const res = await fetch('/api/hardware/nfc/cards', { headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '加载失败');
+                const body = document.getElementById('nfcBody');
+                body.innerHTML = '';
+                if (!data.length) {
+                    body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#718096;">暂无卡片</td></tr>';
+                }
+                data.forEach(c => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${c.id}</td>
+                        <td>${c.card_number}</td>
+                        <td>${c.user_id}</td>
+                        <td>${c.is_active ? '启用' : '禁用'}</td>
+                        <td class="actions">
+                            <button class="ghost" onclick="toggleNfc(${c.id}, ${!c.is_active})">${c.is_active ? '禁用' : '启用'}</button>
+                            <button class="ghost" onclick="deleteNfc(${c.id})">删除</button>
+                        </td>
+                    `;
+                    body.appendChild(tr);
+                });
+                setNfcStatus('卡片加载完成', true);
+            } catch (e) {
+                setNfcStatus(e.message, false, true);
+            }
+        }
+
+        async function toggleNfc(id, enable) {
+            try {
+                const res = await fetch(`/api/hardware/nfc/cards/${id}`, {
+                    method:'PUT',
+                    headers:{ 'Content-Type':'application/json', ...authHeaders() },
+                    body: JSON.stringify({ is_active: enable })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '更新失败');
+                setNfcStatus('已更新卡片状态', true);
+                loadNfc();
+            } catch (e) {
+                setNfcStatus(e.message, false, true);
+            }
+        }
+
+        async function deleteNfc(id) {
+            if (!confirm('确定删除此卡片？')) return;
+            try {
+                const res = await fetch(`/api/hardware/nfc/cards/${id}`, { method:'DELETE', headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '删除失败');
+                setNfcStatus('删除成功', true);
+                loadNfc();
+            } catch (e) {
+                setNfcStatus(e.message, false, true);
+            }
+        }
+
+        loadDevices();
+        loadNfc();
+    </script>
+</body>
+</html>
+

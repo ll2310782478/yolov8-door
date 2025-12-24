@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartAccess 登录 / 注册</title>
+    <style>
+        :root {
+            --primary: #667eea;
+            --primary-dark: #5a67d8;
+            --bg: #f4f6fb;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: var(--bg);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+        .card {
+            background: #fff;
+            width: 100%;
+            max-width: 880px;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            overflow: hidden;
+        }
+        .hero {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            padding: 2.5rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 1.5rem;
+        }
+        .hero h1 { margin: 0; font-size: 1.9rem; }
+        .hero p { margin: 0; line-height: 1.6; color: rgba(255,255,255,0.9); }
+        .hero small { color: rgba(255,255,255,0.75); }
+        .form-pane { padding: 2.5rem; }
+        .tabs { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
+        .tab {
+            padding: 0.75rem 1.25rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            background: #f8fafc;
+            cursor: pointer;
+            font-weight: 600;
+            color: #4a5568;
+        }
+        .tab.active {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+        }
+        form { display: grid; gap: 1rem; }
+        label { font-weight: 600; color: #2d3748; }
+        input {
+            width: 100%;
+            padding: 0.8rem 0.9rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.95rem;
+        }
+        button {
+            padding: 0.85rem 1rem;
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            cursor: pointer;
+            box-shadow: 0 6px 16px rgba(102,126,234,0.35);
+            transition: transform 0.15s;
+        }
+        button:hover { transform: translateY(-1px); }
+        .muted { color: #718096; font-size: 0.9rem; }
+        .message { padding: 0.75rem 1rem; border-radius: 8px; display: none; }
+        .message.success { background: #e6fffa; color: #047857; }
+        .message.error { background: #fef2f2; color: #b91c1c; }
+        .links { display: flex; gap: 0.75rem; align-items: center; }
+        .link-btn {
+            background: #edf2f7;
+            color: #2d3748;
+            padding: 0.6rem 1rem;
+            border-radius: 8px;
+            text-decoration: none;
+        }
+        @media (max-width: 960px) {
+            body { padding: 1rem; }
+            .card { grid-template-columns: 1fr; }
+            .hero { min-height: 200px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="hero">
+            <div>
+                <small>SmartAccess 门禁系统</small>
+                <h1>登录或注册后，进入可视化管理界面</h1>
+                <p>支持用户管理、访客二维码、硬件集成等功能。仍然保留原有 API 接口，方便自动化或二次开发。</p>
+            </div>
+            <div class="links">
+                <a class="link-btn" href="/">返回首页</a>
+                <a class="link-btn" href="/docs">查看 API</a>
+            </div>
+        </div>
+        <div class="form-pane">
+            <div class="tabs">
+                <div class="tab active" id="tab-login" onclick="switchTab('login')">登录</div>
+                <div class="tab" id="tab-register" onclick="switchTab('register')">注册</div>
+            </div>
+
+            <div id="message" class="message"></div>
+
+            <form id="login-form">
+                <div>
+                    <label for="login-username">用户名</label>
+                    <input id="login-username" name="username" autocomplete="username" required>
+                </div>
+                <div>
+                    <label for="login-password">密码</label>
+                    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+                </div>
+                <button type="submit">登录</button>
+                <div class="muted">登录成功后将跳转到控制台，可通过按钮进入用户/访客管理界面。</div>
+            </form>
+
+            <form id="register-form" style="display:none;">
+                <div>
+                    <label for="reg-username">用户名</label>
+                    <input id="reg-username" name="username" required>
+                </div>
+                <div>
+                    <label for="reg-password">密码</label>
+                    <input id="reg-password" name="password" type="password" required>
+                </div>
+                <div>
+                    <label for="reg-email">邮箱（可选）</label>
+                    <input id="reg-email" name="email" type="email">
+                </div>
+                <div>
+                    <label for="reg-phone">电话（可选）</label>
+                    <input id="reg-phone" name="phone">
+                </div>
+                <div>
+                    <label for="reg-fullname">姓名（可选）</label>
+                    <input id="reg-fullname" name="full_name">
+                </div>
+                <button type="submit">注册并登录</button>
+                <div class="muted">注册后会自动登录并跳转到控制台。</div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const messageBox = document.getElementById('message');
+
+        function switchTab(tab) {
+            const loginForm = document.getElementById('login-form');
+            const registerForm = document.getElementById('register-form');
+            document.getElementById('tab-login').classList.toggle('active', tab === 'login');
+            document.getElementById('tab-register').classList.toggle('active', tab === 'register');
+            loginForm.style.display = tab === 'login' ? 'grid' : 'none';
+            registerForm.style.display = tab === 'register' ? 'grid' : 'none';
+            hideMessage();
+        }
+
+        function showMessage(text, type = 'success') {
+            messageBox.textContent = text;
+            messageBox.className = `message ${type}`;
+            messageBox.style.display = 'block';
+        }
+
+        function hideMessage() {
+            messageBox.style.display = 'none';
+        }
+
+        function saveToken(token, username) {
+            localStorage.setItem('smartaccess_token', token);
+            localStorage.setItem('smartaccess_username', username || '');
+        }
+
+        function redirectDashboard() {
+            window.location.href = '/web/dashboard';
+        }
+
+        // 登录
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideMessage();
+            const payload = {
+                username: document.getElementById('login-username').value.trim(),
+                password: document.getElementById('login-password').value
+            };
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || '登录失败');
+                saveToken(data.data.access_token, payload.username);
+                showMessage('登录成功，正在跳转...', 'success');
+                setTimeout(redirectDashboard, 800);
+            } catch (err) {
+                showMessage(err.message, 'error');
+            }
+        });
+
+        // 注册
+        document.getElementById('register-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideMessage();
+            const payload = {
+                username: document.getElementById('reg-username').value.trim(),
+                password: document.getElementById('reg-password').value,
+                email: document.getElementById('reg-email').value || null,
+                phone: document.getElementById('reg-phone').value || null,
+                full_name: document.getElementById('reg-fullname').value || null
+            };
+            try {
+                const res = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || '注册失败');
+                showMessage('注册成功，自动登录...', 'success');
+                // 自动登录
+                const loginRes = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: payload.username, password: payload.password })
+                });
+                const loginData = await loginRes.json();
+                if (!loginRes.ok) throw new Error(loginData.detail || loginData.message || '登录失败');
+                saveToken(loginData.data.access_token, payload.username);
+                setTimeout(redirectDashboard, 600);
+            } catch (err) {
+                showMessage(err.message, 'error');
+            }
+        });
+
+        // 若已登录直接跳转
+        const existingToken = localStorage.getItem('smartaccess_token');
+        if (existingToken) {
+            redirectDashboard();
+        }
+    </script>
+</body>
+</html>
+
