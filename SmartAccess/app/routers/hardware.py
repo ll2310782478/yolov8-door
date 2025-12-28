@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission
+from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask
 from app.utils import check_permission_valid
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -23,9 +23,9 @@ class HardwareDeviceCreate(BaseModel):
     device_id: str
     device_name: str
     device_type: str  # nfc_reader, bluetooth_scanner, camera, door_lock
-    location: str = None
-    ip_address: str = None
-    port: int = None
+    location: Optional[str] = None
+    ip_address: Optional[str] = None
+    port: Optional[int] = None
 
 
 class HardwareDeviceUpdate(BaseModel):
@@ -45,6 +45,8 @@ class HardwareDeviceResponse(BaseModel):
     is_active: bool
     last_heartbeat: Optional[datetime] = None
     connection_status: Optional[str] = None
+    ip_address: Optional[str] = None
+    port: Optional[int] = None
     created_at: datetime
 
     class Config:
@@ -58,7 +60,7 @@ class AccessLogResponse(BaseModel):
     status: str
     timestamp: datetime
     device_id: str
-    details: str = None
+    details: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -69,9 +71,10 @@ class AccessLogResponse(BaseModel):
 class NFCCardCreate(BaseModel):
     user_id: int
     card_number: str
-    card_name: str = None
+    card_name: Optional[str] = None
     permission_end_date: Optional[datetime] = None
     max_daily_uses: int = 0
+    door_id: str = "door1"  # door1 / door2
 
 
 class NFCCardUpdate(BaseModel):
@@ -80,13 +83,15 @@ class NFCCardUpdate(BaseModel):
     permission_end_date: Optional[datetime] = None
     max_daily_uses: Optional[int] = None
     time_periods: Optional[str] = None
+    door_id: Optional[str] = None
 
 
 class NFCCardResponse(BaseModel):
     id: int
     user_id: int
     card_number: str
-    card_name: str = None
+    card_name: Optional[str] = None
+    door_id: Optional[str] = None
     is_active: bool
     created_at: datetime
     permission_start_date: datetime
@@ -103,7 +108,7 @@ class NFCCardResponse(BaseModel):
 class BluetoothBindingCreate(BaseModel):
     user_id: int
     device_id: str
-    device_name: str = None
+    device_name: Optional[str] = None
     is_paired: bool = False
     permission_end_date: Optional[datetime] = None
     max_daily_uses: int = 0
@@ -121,7 +126,7 @@ class BluetoothBindingResponse(BaseModel):
     id: int
     user_id: int
     device_id: str
-    device_name: str = None
+    device_name: Optional[str] = None
     is_paired: bool
     is_active: bool
     created_at: datetime
@@ -255,6 +260,7 @@ def create_nfc_card(card: NFCCardCreate, db: Session = Depends(get_db)):
         user_id=card.user_id,
         card_number=card.card_number,
         card_name=card.card_name,
+        door_id=card.door_id,
         permission_start_date=datetime.utcnow(),
         permission_end_date=card.permission_end_date,
         max_daily_uses=card.max_daily_uses,
@@ -309,6 +315,8 @@ def update_nfc_card(card_id: int, card_update: NFCCardUpdate, db: Session = Depe
         card.max_daily_uses = card_update.max_daily_uses
     if card_update.time_periods:
         card.time_periods = card_update.time_periods
+    if card_update.door_id:
+        card.door_id = card_update.door_id
     
     db.commit()
     db.refresh(card)
@@ -411,27 +419,27 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
     device_id = req.device_id or request.client.host
 
     # 检查是否存在未完成的 NFCTask（最近 30 秒内）并将结果挂到任务上
-    task = db.query(__import__('app.models').NFCTask).filter(
-        __import__('app.models').NFCTask.device_id == device_id,
-        __import__('app.models').NFCTask.status.in_(["pending", "sent"])
-    ).order_by(__import__('app.models').NFCTask.created_at.desc()).first()
+    task = db.query(NFCTask).filter(
+        NFCTask.device_id == device_id,
+        NFCTask.status.in_(["pending", "sent"])
+    ).order_by(NFCTask.created_at.desc()).first()
 
     # 查找卡片
     card = db.query(NFCCard).filter(NFCCard.card_number == card_uid).first()
 
     if not card:
-        # 记录日志并可能关联任务
-        access_log = AccessLog(
-            user_id=None,
-            access_type="nfc",
-            status="failed",
-            device_id=device_id,
-            details=f"Unknown NFC card: {card_uid}"
-        )
-        db.add(access_log)
+        # 如果卡片不存在且有ENROLL任务，记录卡片UID到任务结果，不创建AccessLog
+        if task and task.command == "ENROLL":
+            task.status = "done"
+            task.result = f'{{"card_uid":"{card_uid}"}}'
+            task.consumed_at = datetime.utcnow()
+            db.commit()
+            return {"action": "ACCEPT", "msg": "卡片已识别，请等待后台注册"}
+        
+        # 如果是SCAN或其他命令，不创建NULL user_id的AccessLog，直接返回DENY
         if task:
             task.status = "done"
-            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"unknown\"}}"
+            task.result = f'{{"card_uid":"{card_uid}","status":"unknown"}}'
             task.consumed_at = datetime.utcnow()
         db.commit()
         return {"action": "DENY", "msg": "未知卡片"}
@@ -484,13 +492,13 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
 
     if task:
         task.status = "done"
-        task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"success\",\"user_id\":{card.user_id}}}"
+        task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"success\",\"user_id\":{card.user_id},\"door\":\"{card.door_id}\"}}"
         task.consumed_at = datetime.utcnow()
 
     db.commit()
 
     user = card.user
-    return {"action": "OPEN", "msg": f"欢迎 {user.full_name or user.username}"}
+    return {"action": "OPEN", "door": card.door_id, "msg": f"欢迎 {user.full_name or user.username}"}
 
 
 # ==================== Web -> 设备 的命令队列（用于点击触发扫描） ====================
@@ -519,8 +527,7 @@ class NFCTaskResponse(BaseModel):
 @router.post("/nfc/command", response_model=NFCTaskResponse)
 def create_nfc_command(task_in: NFCTaskCreate, db: Session = Depends(get_db)):
     """Web 后台创建一个 NFC 任务（通常是 SCAN），设备会轮询并执行。"""
-    Task = __import__('app.models').NFCTask
-    task = Task(
+    task = NFCTask(
         device_id=task_in.device_id,
         command=task_in.command,
         payload=task_in.payload,
@@ -535,11 +542,10 @@ def create_nfc_command(task_in: NFCTaskCreate, db: Session = Depends(get_db)):
 @router.get("/nfc/command/poll")
 def poll_nfc_command(device_id: str, db: Session = Depends(get_db)):
     """设备轮询此接口以获取待执行命令。返回最近一个 pending 的命令并标记为 sent。"""
-    Task = __import__('app.models').NFCTask
-    task = db.query(Task).filter(
-        Task.device_id == device_id,
-        Task.status == "pending"
-    ).order_by(Task.created_at.asc()).first()
+    task = db.query(NFCTask).filter(
+        NFCTask.device_id == device_id,
+        NFCTask.status == "pending"
+    ).order_by(NFCTask.created_at.asc()).first()
     if not task:
         return {"has_command": False}
 
@@ -556,8 +562,7 @@ def poll_nfc_command(device_id: str, db: Session = Depends(get_db)):
 
 @router.get("/nfc/command/status/{task_id}")
 def get_nfc_command_status(task_id: int, db: Session = Depends(get_db)):
-    Task = __import__('app.models').NFCTask
-    task = db.query(Task).filter(Task.id == task_id).first()
+    task = db.query(NFCTask).filter(NFCTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {

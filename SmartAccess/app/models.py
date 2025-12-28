@@ -84,6 +84,7 @@ class NFCCard(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     card_number = Column(String(50), unique=True, index=True, nullable=False)  # 卡号
     card_name = Column(String(100))  # 卡片名称
+    door_id = Column(String(20), default="door1")  # 门编号：door1/door2
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -57,6 +57,12 @@ def web_hardware():
     return load_template("hardware.html")
 
 
+@router.get("/test-hardware", response_class=HTMLResponse)
+def web_test_hardware():
+    """硬件测试页面：查看设备注册信息（含IP），并发送指令"""
+    return load_template("test_hardware.html")
+
+
 @router.get("/logs", response_class=HTMLResponse)
 def web_logs():
     """访问日志页面"""

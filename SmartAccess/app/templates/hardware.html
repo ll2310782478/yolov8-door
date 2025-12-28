@@ -152,6 +152,14 @@
             window.location.href = '/web/auth';
         }
         function authHeaders(extra = {}) { return { 'Authorization': `Bearer ${token}`, ...extra }; }
+        async function parseJsonSafe(res) {
+          try {
+            const text = await res.text();
+            return JSON.parse(text);
+          } catch (e) {
+            return { detail: '响应解析失败：' + (e.message || '未知错误') };
+          }
+        }
         function setStatus(msg, good=false, bad=false) {
             const box = document.getElementById('status');
             box.textContent = msg;
@@ -176,7 +184,7 @@
         async function loadDevices() {
             try {
                 const res = await fetch('/api/hardware/devices', { headers: authHeaders() });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '加载设备失败');
                 const body = document.getElementById('deviceBody');
                 body.innerHTML = '';
@@ -223,7 +231,7 @@
                     headers: { 'Content-Type':'application/json', ...authHeaders() },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '注册失败');
                 setFormStatus('注册成功', true);
                 loadDevices();
@@ -239,7 +247,7 @@
                     headers:{ 'Content-Type':'application/json', ...authHeaders() },
                     body: JSON.stringify({ is_active: enable })
                 });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '更新失败');
                 setStatus('已更新设备状态', true);
                 loadDevices();
@@ -251,7 +259,7 @@
         async function loadBt() {
             try {
                 const res = await fetch('/api/hardware/bluetooth/binding', { headers: authHeaders() });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '加载失败');
                 const body = document.getElementById('btBody');
                 body.innerHTML = '';
@@ -285,7 +293,7 @@
                     headers:{ 'Content-Type':'application/json', ...authHeaders() },
                     body: JSON.stringify({ is_active: enable })
                 });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '更新失败');
                 setBtStatus('已更新绑定状态', true);
                 loadBt();
@@ -298,7 +306,7 @@
             if (!confirm('确定删除此绑定？')) return;
             try {
                 const res = await fetch(`/api/hardware/bluetooth/binding/${id}`, { method:'DELETE', headers: authHeaders() });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '删除失败');
                 setBtStatus('删除成功', true);
                 loadBt();
@@ -319,7 +327,7 @@
                     headers: { 'Content-Type':'application/json', ...authHeaders() },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '绑定失败');
                 setBtStatus('绑定/更新成功', true);
             } catch (e) {
@@ -334,7 +342,7 @@
             try {
                 const url = `/api/hardware/bluetooth/unlock?user_id=${encodeURIComponent(user_id)}&device_id=${encodeURIComponent(device_id)}`;
                 const res = await fetch(url, { method:'POST', headers: authHeaders() });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok || data.status !== 'success') throw new Error(data.message || '开门失败');
                 setBtStatus('远程开门成功', true);
             } catch (e) {
@@ -354,7 +362,7 @@
                     headers: { 'Content-Type':'application/json', ...authHeaders() },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '添加失败');
                 setNfcStatus('添加成功', true);
                 loadNfc();
@@ -366,7 +374,7 @@
         async function loadNfc() {
             try {
                 const res = await fetch('/api/hardware/nfc/cards', { headers: authHeaders() });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '加载失败');
                 const body = document.getElementById('nfcBody');
                 body.innerHTML = '';
@@ -400,7 +408,7 @@
                     headers:{ 'Content-Type':'application/json', ...authHeaders() },
                     body: JSON.stringify({ is_active: enable })
                 });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '更新失败');
                 setNfcStatus('已更新卡片状态', true);
                 loadNfc();
@@ -413,7 +421,7 @@
             if (!confirm('确定删除此卡片？')) return;
             try {
                 const res = await fetch(`/api/hardware/nfc/cards/${id}`, { method:'DELETE', headers: authHeaders() });
-                const data = await res.json();
+                const data = await parseJsonSafe(res);
                 if (!res.ok) throw new Error(data.detail || '删除失败');
                 setNfcStatus('删除成功', true);
                 loadNfc();
