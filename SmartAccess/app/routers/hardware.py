@@ -714,6 +714,49 @@ def enable_bluetooth_pairing(device_id: str, duration_seconds: int = 300, db: Se
     }
 
 
+@router.post("/nfc/remote-unlock")
+def nfc_remote_unlock(
+    device_id: str,
+    door_id: str = Query(default="door1", regex="^door[12]$"),
+    db: Session = Depends(get_db)
+):
+    """NFC远程开门（管理员操作）"""
+    # 验证设备是否存在
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device_id
+    ).first()
+    
+    if not device:
+        return {"status": "failed", "message": "设备不存在"}
+    
+    if not device.is_active:
+        return {"status": "failed", "message": "设备未启用"}
+    
+    # 记录远程开门日志（使用admin用户ID=1，如果不存在就不记录user_id）
+    admin_user = db.query(User).filter(User.role == "admin").first()
+    
+    access_log = AccessLog(
+        user_id=admin_user.id if admin_user else None,
+        access_type="nfc",
+        status="success",
+        device_id=device_id,
+        details=f"Remote unlock {door_id} by admin"
+    )
+    db.add(access_log)
+    db.commit()
+    
+    # TODO: 调用实际的硬件开锁接口
+    # 这里应该向ESP8266发送MQTT或HTTP指令
+    
+    return {
+        "status": "success",
+        "message": f"{door_id}开门指令已发送",
+        "device_id": device_id,
+        "door_id": door_id,
+        "timestamp": datetime.utcnow()
+    }
+
+
 # ==================== 访问日志管理 ====================
 
 @router.get("/logs", response_model=List[AccessLogResponse])
