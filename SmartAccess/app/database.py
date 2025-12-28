@@ -84,3 +84,49 @@ def init_db():
     
     # 创建所有表
     Base.metadata.create_all(bind=engine)
+
+    # —— 轻量迁移：为已有表补齐缺失列（兼容老版本 DB） ——
+    try:
+        with engine.connect() as conn:
+            if "mysql" in DATABASE_URL:
+                # 检查并添加 nfc_cards.door_id（MySQL）
+                from urllib.parse import urlparse
+                parsed = urlparse(DATABASE_URL)
+                db_name = parsed.path.lstrip("/")
+                res = conn.execute(text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=:db AND TABLE_NAME='nfc_cards'"
+                ), {"db": db_name}).fetchall()
+                cols = {r[0] for r in res}
+                # 需要的列定义（按模型）
+                needed = {
+                    "door_id": "VARCHAR(20) DEFAULT 'door1'",
+                    "time_periods": "TEXT",
+                    "max_daily_uses": "INT DEFAULT 0",
+                    "daily_use_count": "INT DEFAULT 0",
+                    "last_use_date": "DATETIME",
+                    "updated_at": "DATETIME",
+                }
+                for col, ddl in needed.items():
+                    if col not in cols:
+                        conn.execute(text(f"ALTER TABLE nfc_cards ADD COLUMN {col} {ddl}"))
+                conn.commit()
+            else:
+                # SQLite：PRAGMA 检查列并补齐
+                res = conn.execute(text("PRAGMA table_info('nfc_cards')")).fetchall()
+                cols = {r[1] for r in res}  # r[1] 是列名
+                # 需要的列定义（按模型）
+                needed = {
+                    "door_id": "VARCHAR(20) DEFAULT 'door1'",
+                    "time_periods": "TEXT",
+                    "max_daily_uses": "INTEGER DEFAULT 0",
+                    "daily_use_count": "INTEGER DEFAULT 0",
+                    "last_use_date": "DATETIME",
+                    "updated_at": "DATETIME",
+                }
+                for col, ddl in needed.items():
+                    if col not in cols:
+                        conn.execute(text(f"ALTER TABLE nfc_cards ADD COLUMN {col} {ddl}"))
+                conn.commit()
+    except Exception as e:
+        # 保守处理：仅打印警告，不阻断启动
+        print(f"警告：轻量迁移失败（可忽略） - {e}")

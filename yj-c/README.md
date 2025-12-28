@@ -58,7 +58,11 @@ GND        --> LED 短脚（通过 220Ω 电阻）
 
 ### 3. 固件配置
 
-打开 `esp8266_pn532_nfc_reader.ino` 文件，找到配置段并修改：
+推荐使用新的 v2 固件：[yj-c/esp8266_pn532_v2.ino](yj-c/esp8266_pn532_v2.ino)
+
+它集成了设备注册与心跳保活，并与 SmartAccess v2 的后端 API 完全对接。
+
+打开 `esp8266_pn532_v2.ino` 文件，找到配置段并修改：
 
 ```cpp
 // WiFi 配置
@@ -68,7 +72,13 @@ const char* PASSWORD = "your-wifi-password";       // 改为你的 WiFi 密码
 // 后端服务器配置
 const char* SERVER_HOST = "192.168.1.100";        // 改为你的服务器 IP
 const int SERVER_PORT = 8000;                      // 后端 FastAPI 端口
-const char* DEVICE_ID = "nfc_reader_01";          // 设备 ID（与后端注册一致）
+
+// 设备信息（需与后端注册一致）
+const char* DEVICE_ID   = "nfc_reader_01";        // 唯一设备 ID
+const char* DEVICE_NAME = "一楼门禁";              // 展示名称
+const char* DEVICE_TYPE = "nfc_reader";           // 设备类型
+const char* DEVICE_LOCATION = "主入口";            // 位置描述
+const char* FIRMWARE_VERSION = "2.0";             // 固件版本
 
 // GPIO 引脚配置（根据你的接线修改）
 #define PN532_SCL 5   // GPIO5 (D1)

@@ -23,9 +23,9 @@ class HardwareDeviceCreate(BaseModel):
     device_id: str
     device_name: str
     device_type: str  # nfc_reader, bluetooth_scanner, camera, door_lock
-    location: Optional[str] = None
-    ip_address: Optional[str] = None
-    port: Optional[int] = None
+    location: str = None
+    ip_address: str = None
+    port: int = None
 
 
 class HardwareDeviceUpdate(BaseModel):
@@ -60,7 +60,7 @@ class AccessLogResponse(BaseModel):
     status: str
     timestamp: datetime
     device_id: str
-    details: Optional[str] = None
+    details: str = None
 
     class Config:
         orm_mode = True
@@ -71,10 +71,9 @@ class AccessLogResponse(BaseModel):
 class NFCCardCreate(BaseModel):
     user_id: int
     card_number: str
-    card_name: Optional[str] = None
+    card_name: str = None
     permission_end_date: Optional[datetime] = None
     max_daily_uses: int = 0
-    door_id: str = "door1"  # door1 / door2
 
 
 class NFCCardUpdate(BaseModel):
@@ -83,15 +82,13 @@ class NFCCardUpdate(BaseModel):
     permission_end_date: Optional[datetime] = None
     max_daily_uses: Optional[int] = None
     time_periods: Optional[str] = None
-    door_id: Optional[str] = None
 
 
 class NFCCardResponse(BaseModel):
     id: int
     user_id: int
     card_number: str
-    card_name: Optional[str] = None
-    door_id: Optional[str] = None
+    card_name: str = None
     is_active: bool
     created_at: datetime
     permission_start_date: datetime
@@ -108,7 +105,7 @@ class NFCCardResponse(BaseModel):
 class BluetoothBindingCreate(BaseModel):
     user_id: int
     device_id: str
-    device_name: Optional[str] = None
+    device_name: str = None
     is_paired: bool = False
     permission_end_date: Optional[datetime] = None
     max_daily_uses: int = 0
@@ -126,7 +123,7 @@ class BluetoothBindingResponse(BaseModel):
     id: int
     user_id: int
     device_id: str
-    device_name: Optional[str] = None
+    device_name: str = None
     is_paired: bool
     is_active: bool
     created_at: datetime
@@ -260,7 +257,6 @@ def create_nfc_card(card: NFCCardCreate, db: Session = Depends(get_db)):
         user_id=card.user_id,
         card_number=card.card_number,
         card_name=card.card_name,
-        door_id=card.door_id,
         permission_start_date=datetime.utcnow(),
         permission_end_date=card.permission_end_date,
         max_daily_uses=card.max_daily_uses,
@@ -315,8 +311,6 @@ def update_nfc_card(card_id: int, card_update: NFCCardUpdate, db: Session = Depe
         card.max_daily_uses = card_update.max_daily_uses
     if card_update.time_periods:
         card.time_periods = card_update.time_periods
-    if card_update.door_id:
-        card.door_id = card_update.door_id
     
     db.commit()
     db.refresh(card)
@@ -428,7 +422,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
     card = db.query(NFCCard).filter(NFCCard.card_number == card_uid).first()
 
     if not card:
-        # 如果卡片不存在且有ENROLL任务，记录卡片UID到任务结果，不创建AccessLog
+        # 如果是ENROLL任务，直接返回新卡号，不记录日志
         if task and task.command == "ENROLL":
             task.status = "done"
             task.result = f'{{"card_uid":"{card_uid}"}}'
@@ -436,8 +430,16 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
             db.commit()
             return {"action": "ACCEPT", "msg": "卡片已识别，请等待后台注册"}
         
-        # 如果是SCAN或其他命令，不创建NULL user_id的AccessLog，直接返回DENY
-        if task:
+        # 否则记录日志并可能关联任务（仅当任务是SCAN时）
+        if task and task.command == "SCAN":
+            access_log = AccessLog(
+                user_id=None,
+                access_type="nfc",
+                status="failed",
+                device_id=device_id,
+                details=f"Unknown NFC card: {card_uid}"
+            )
+            db.add(access_log)
             task.status = "done"
             task.result = f'{{"card_uid":"{card_uid}","status":"unknown"}}'
             task.consumed_at = datetime.utcnow()
@@ -456,7 +458,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         db.add(access_log)
         if task:
             task.status = "done"
-            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"disabled\"}}"
+            task.result = f'{{"card_uid":"{card_uid}","status":"disabled"}}'
             task.consumed_at = datetime.utcnow()
         db.commit()
         return {"action": "DENY", "msg": "卡片已被禁用"}
@@ -472,7 +474,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         db.add(access_log)
         if task:
             task.status = "done"
-            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"expired\"}}"
+            task.result = f'{{"card_uid":"{card_uid}","status":"expired"}}'
             task.consumed_at = datetime.utcnow()
         db.commit()
         return {"action": "DENY", "msg": "卡片权限已过期"}
@@ -492,13 +494,13 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
 
     if task:
         task.status = "done"
-        task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"success\",\"user_id\":{card.user_id},\"door\":\"{card.door_id}\"}}"
+        task.result = f'{{"card_uid":"{card_uid}","status":"success","user_id":{card.user_id}}}'
         task.consumed_at = datetime.utcnow()
 
     db.commit()
 
     user = card.user
-    return {"action": "OPEN", "door": card.door_id, "msg": f"欢迎 {user.full_name or user.username}"}
+    return {"action": "OPEN", "msg": f"欢迎 {user.full_name or user.username}"}
 
 
 # ==================== Web -> 设备 的命令队列（用于点击触发扫描） ====================

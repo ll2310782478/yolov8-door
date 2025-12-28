@@ -16,7 +16,7 @@ const char* SSID = "lll";            // 修改为你的 WiFi SSID
 const char* PASSWORD = "12345678";   // 修改为你的 WiFi 密码
 
 // 后端服务器配置
-const char* SERVER_HOST = "192.168.188.196"; // 修改为后端服务器 IP
+const char* SERVER_HOST = "192.168.188.56"; // 修改为后端服务器 IP
 const int   SERVER_PORT = 8000;            // FastAPI 端口
 
 // 设备信息（需与后端注册一致）
