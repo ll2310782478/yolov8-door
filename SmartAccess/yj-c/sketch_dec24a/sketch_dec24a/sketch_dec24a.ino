@@ -1,300 +1,467 @@
 /*
-esp8266-pn532.c
+ * ESP8266 + PN532 NFC 硬件固件 (v2)
+ * 功能：设备注册/心跳、命令轮询、读卡上报、开门（继电器）、指示灯
+ */
 
-ESP8266 + PN532 (Adafruit) 固件 - 硬件I2C版
-修复了 "PN532 not found" 但 I2C 扫描能扫到的问题。
-*/
-
-#include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_PN532.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <WiFiClientSecureBearSSL.h>
 #include <ArduinoJson.h>
 
-// ================= 配置区域 =================
-const char* ssid = "lll";             // 你的 WiFi 名称
-const char* password = "12345678";    // 你的 WiFi 密码
+// ==================== 配置 ====================
 
-// 服务器配置
-const char* server_base = "http://192.168.188.116:8000";
-// 为诊断方便，单独保留主机/端口
-const char* server_host = "192.168.188.116";
-const uint16_t server_port = 8000;
+// WiFi 配置
+const char* SSID = "lll";            // 修改为你的 WiFi SSID
+const char* PASSWORD = "12345678";   // 修改为你的 WiFi 密码
 
-// 认证方式配置
-const char* api_token = ""; 
-const char* basic_user = "";
-const char* basic_pass = "";
-bool use_bearer = true;  
-bool use_basic = false;  
+// 后端服务器配置
+const char* SERVER_HOST = "192.168.188.196"; // 修改为后端服务器 IP
+const int   SERVER_PORT = 8000;            // FastAPI 端口
 
-// 设备信息
-const char* firmware_version = "1.1-HardwareI2C";
+// 设备信息（需与后端注册一致）
+const char* DEVICE_ID   = "nfc_reader_01";
+const char* DEVICE_NAME = "一楼门禁";
+const char* DEVICE_TYPE = "nfc_reader";
+const char* DEVICE_LOCATION = "主入口";
+const char* FIRMWARE_VERSION = "2.0";
 
-// 定时参数
-const unsigned long HEARTBEAT_INTERVAL_MS = 30000; 
-const unsigned long REGISTER_RETRY_MS = 15000;    
+// API 端点
+const char* API_REGISTER      = "/api/hardware/devices";
+const char* API_HEARTBEAT_FMT = "/api/hardware/devices/%s/heartbeat";
+const char* API_POLL          = "/api/hardware/nfc/command/poll";
+const char* API_SCAN          = "/api/hardware/nfc-scan";
 
-// ================= 硬件定义 (关键修改) =================
-// 即使你只接了4根线，库也需要定义 IRQ 和 RESET 引脚
-// 我们这里定义 D3 和 D4，即使没接线也没关系，库会使用 I2C 协议
-#define PN532_IRQ   D3
-#define PN532_RESET D4 
+// 间隔（毫秒）
+const unsigned long POLL_INTERVAL      = 5000;   // 5 秒轮询一次
+const unsigned long HEARTBEAT_INTERVAL = 30000;  // 30 秒心跳一次
 
-// I2C 引脚 (NodeMCU 默认就是 D2/D1)
-#define PN532_SDA D2
-#define PN532_SCL D1
+// ==================== GPIO 引脚 ====================
 
-#define RELAY_PIN D5
+// I2C 引脚
+#define PN532_SCL 5    // GPIO5 (D1)
+#define PN532_SDA 4    // GPIO4 (D2)
+#define PN532_IRQ 0    // 占位
+#define PN532_RESET 16 // 占位
 
-// 【核心修改】使用硬件 I2C 构造函数
-// 这会告诉库："不要自己模拟引脚，直接用 Wire 库已经连好的通道"
+// 两路门锁/指示输出（门1=D8，门2=D7），另用板载LED做状态灯
+#define DOOR1_PIN 15      // GPIO15 (D8) -> 门1
+#define DOOR2_PIN 13      // GPIO13 (D7) -> 门2
+#define STATUS_LED_PIN 2  // GPIO2 (D4)  板载LED，低电平点亮
+const bool LED_ACTIVE_LOW = true; // 若使用外接高电平点亮LED，改为 false
+
+// ==================== 全局对象与状态 ====================
+
 Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET);
+WiFiClient httpClient;
+bool device_registered = false;
+String last_command = "";
+String last_payload = "";
+String last_uid = "";
+unsigned long last_uid_time = 0;
+const unsigned long UID_DEBOUNCE_MS = 2000;
+const bool CONTINUOUS_SCAN_MODE = true;
+String last_door = "door1";  // 保存最后一次扫卡的门号信息
 
-// ================= 全局变量 =================
-String device_id = ""; 
-unsigned long lastHeartbeat = 0;
-unsigned long lastRegisterAttempt = 0;
-bool isRegistered = false;
+// ==================== 日志/指示 ====================
 
-// ======= 辅助函数 =======
-String getMacID() {
-  String mac = WiFi.macAddress();
-  mac.replace(':', '_');
-  return mac;
+void initLED() {
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, LED_ACTIVE_LOW ? HIGH : LOW); // 默认关闭
 }
 
-String makeAuthHeader() {
-  if (use_bearer && strlen(api_token) > 0) {
-    return "Bearer " + String(api_token);
-  }
-  if (use_basic && strlen(basic_user) > 0) {
-    // 简单实现，暂不处理 Base64
-    return String(""); 
-  }
-  return String("");
-}
-
-String httpPostJson(const String& url, const String& jsonBody, int& outCode) {
-  HTTPClient http;
-  WiFiClient client;
-  http.setTimeout(5000); 
-  http.begin(client, url);
-  http.addHeader("Content-Type", "application/json");
-  
-  String auth = makeAuthHeader();
-  if (auth.length() > 0) {
-    http.addHeader("Authorization", auth);
-  }
-
-  Serial.printf("[HTTP] POST %s ...", url.c_str());
-  outCode = http.POST(jsonBody);
-  Serial.printf(" code=%d", outCode);
-
-  String payload = "";
-  if (outCode > 0) {
-    payload = http.getString();
+void setLED(bool on) {
+  if (LED_ACTIVE_LOW) {
+    digitalWrite(STATUS_LED_PIN, on ? LOW : HIGH); // 低电平点亮
   } else {
-    Serial.print(" [ERR: connection/timeout]");
+    digitalWrite(STATUS_LED_PIN, on ? HIGH : LOW); // 高电平点亮
+  }
+}
+
+void initRelay() {
+  pinMode(DOOR1_PIN, OUTPUT);
+  pinMode(DOOR2_PIN, OUTPUT);
+  digitalWrite(DOOR1_PIN, LOW); // 初始关闭
+  digitalWrite(DOOR2_PIN, LOW);
+}
+
+void openDoor(uint8_t door = 1, unsigned int duration_ms = 1500) {
+  uint8_t pin = (door == 2) ? DOOR2_PIN : DOOR1_PIN;
+  Serial.print("[Door] 打开门锁: 门"); Serial.println(door);
+  digitalWrite(pin, HIGH);
+  setLED(true);
+  delay(duration_ms);
+  digitalWrite(pin, LOW);
+  setLED(false);
+  Serial.println("[Door] 关闭门锁");
+}
+
+// ==================== WiFi ====================
+
+void initWiFi() {
+  Serial.println("[WiFi] 连接 WiFi...");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(SSID, PASSWORD);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
   }
   Serial.println();
 
-  http.end();
-  return payload;
-}
-
-// 注册设备
-bool registerDevice() {
-  if (isRegistered) return true;
-  if (millis() - lastRegisterAttempt < REGISTER_RETRY_MS) return false;
-  lastRegisterAttempt = millis();
-
-  String url = String(server_base) + "/api/hardware/devices";
-  
-  // 适配 ArduinoJson V6/V7
-  JsonDocument doc; 
-  doc["device_id"] = device_id;
-  doc["device_name"] = device_id;
-  doc["device_type"] = "nfc_reader";
-  doc["location"] = "Entrance";
-  doc["ip_address"] = WiFi.localIP().toString();
-  
-  String body;
-  serializeJson(doc, body);
-
-  int code = 0;
-  String resp = httpPostJson(url, body, code);
-  if (code == 200 || code == 201) {
-    isRegistered = true;
-    Serial.println("注册成功!");
-    return true;
-  } else if (code == 400) {
-    Serial.println("设备可能已存在 (400), 视为成功.");
-    isRegistered = true;
-    return true;
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("[WiFi] ✓ 已连接");
+    Serial.print("[WiFi] IP: ");
+    Serial.println(WiFi.localIP());
+    setLED(true);
   } else {
-    Serial.printf("注册失败: %d\n", code);
-    return false;
+    Serial.println("[WiFi] ✗ 连接失败");
+    setLED(false);
   }
 }
 
-// 发送心跳
-bool sendHeartbeat() {
-  String url = String(server_base) + "/api/hardware/devices/" + device_id + "/heartbeat";
-  
-  JsonDocument doc;
-  doc["connection_status"] = "online";
-  doc["firmware_version"] = firmware_version;
-  doc["ip_address"] = WiFi.localIP().toString();
-  
-  String body;
-  serializeJson(doc, body);
-  int code = 0;
-  String resp = httpPostJson(url, body, code);
-  if (code == 200) {
-    lastHeartbeat = millis();
+// ==================== PN532 ====================
+
+void initPN532() {
+  Serial.println("[PN532] 初始化 NFC 模块...");
+  Wire.begin(PN532_SDA, PN532_SCL);
+
+  Wire.beginTransmission(0x24);
+  if (Wire.endTransmission() == 0) {
+    Serial.println("[PN532] I2C 探测到 PN532 (0x24)");
+  } else {
+    Serial.println("[PN532] ⚠ I2C 未探测到 0x24，检查 SDA/SCL 及供电");
+  }
+
+  nfc.begin();
+  uint32_t ver = nfc.getFirmwareVersion();
+  if (!ver) {
+    Serial.println("[PN532] ✗ 未检测到 PN532 模块");
+    return;
+  }
+  Serial.print("[PN532] 固件版本: 0x");
+  Serial.println(ver >> 24, HEX);
+  nfc.SAMConfig();
+  Serial.println("[PN532] ✓ 初始化完成");
+}
+
+// ==================== HTTP 工具 ====================
+
+String readHttpBody(String &raw) {
+  int pos = raw.indexOf("\r\n\r\n");
+  if (pos == -1) {
+    pos = raw.indexOf("\n\n");
+    if (pos != -1) pos += 2;
+  } else {
+    pos += 4;
+  }
+  if (pos == -1) return String("");
+  return raw.substring(pos);
+}
+
+bool httpGet(const String &url_path_and_query, String &response) {
+  response = "";
+  if (!httpClient.connect(SERVER_HOST, SERVER_PORT)) {
+    Serial.println("[HTTP] ✗ 连接服务器失败(GET)");
+    return false;
+  }
+  httpClient.print("GET ");
+  httpClient.print(url_path_and_query);
+  httpClient.println(" HTTP/1.1");
+  httpClient.print("Host: ");
+  httpClient.print(SERVER_HOST);
+  httpClient.print(":");
+  httpClient.println(SERVER_PORT);
+  httpClient.println("Connection: close");
+  httpClient.println();
+
+  unsigned long start = millis();
+  while ((millis() - start) < 4000 && (httpClient.connected() || httpClient.available())) {
+    if (httpClient.available()) response += (char)httpClient.read();
+  }
+  httpClient.stop();
+  return response.length() > 0;
+}
+
+bool httpPost(const String &url_path, const String &jsonBody, String &response) {
+  response = "";
+  if (!httpClient.connect(SERVER_HOST, SERVER_PORT)) {
+    Serial.println("[HTTP] ✗ 连接服务器失败(POST)");
+    return false;
+  }
+  httpClient.print("POST ");
+  httpClient.print(url_path);
+  httpClient.println(" HTTP/1.1");
+  httpClient.print("Host: ");
+  httpClient.print(SERVER_HOST);
+  httpClient.print(":");
+  httpClient.println(SERVER_PORT);
+  httpClient.println("Content-Type: application/json");
+  httpClient.print("Content-Length: ");
+  httpClient.println(jsonBody.length());
+  httpClient.println("Connection: close");
+  httpClient.println();
+  httpClient.print(jsonBody);
+
+  unsigned long start = millis();
+  while ((millis() - start) < 5000 && (httpClient.connected() || httpClient.available())) {
+    if (httpClient.available()) response += (char)httpClient.read();
+  }
+  httpClient.stop();
+  return response.length() > 0;
+}
+
+// ==================== 设备注册/心跳 ====================
+
+bool registerDevice() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  Serial.println("[Register] 注册设备...");
+
+  StaticJsonDocument<512> doc;
+  doc["device_id"]   = DEVICE_ID;
+  doc["device_name"] = DEVICE_NAME;
+  doc["device_type"] = DEVICE_TYPE;
+  doc["location"]    = DEVICE_LOCATION;
+  doc["ip_address"]  = WiFi.localIP().toString();
+  String payload;
+  serializeJson(doc, payload);
+
+  String resp;
+  if (!httpPost(String(API_REGISTER), payload, resp)) return false;
+
+  if (resp.indexOf(" 200 ") != -1 || resp.indexOf(" 201 ") != -1) {
+    device_registered = true;
+    Serial.println("[Register] ✓ 设备注册成功");
     return true;
+  }
+  if (resp.indexOf(" 400 ") != -1) {
+    device_registered = true; // 已存在视为成功
+    Serial.println("[Register] ✓ 设备已存在");
+    return true;
+  }
+  Serial.print("[Register] ✗ 注册失败，响应头: ");
+  Serial.println(resp.substring(0, 80));
+  return false;
+}
+
+bool sendHeartbeat() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  char heartbeat_path[120];
+  snprintf(heartbeat_path, sizeof(heartbeat_path), API_HEARTBEAT_FMT, DEVICE_ID);
+
+  StaticJsonDocument<256> doc;
+  doc["connection_status"] = "online";
+  doc["firmware_version"]  = FIRMWARE_VERSION;
+  doc["ip_address"]        = WiFi.localIP().toString();
+  String payload;
+  serializeJson(doc, payload);
+
+  String resp;
+  if (!httpPost(String(heartbeat_path), payload, resp)) return false;
+
+  String body = readHttpBody(resp);
+  if (body.indexOf("ok") != -1 || resp.indexOf(" 200 ") != -1) {
+    Serial.println("[Heartbeat] ✓ 心跳成功");
+    return true;
+  }
+  Serial.println("[Heartbeat] ✗ 心跳失败");
+  return false;
+}
+
+// ==================== NFC 读卡/轮询/上报 ====================
+
+String readNFCCard(unsigned long timeout_ms = 10000) {
+  Serial.println("[NFC] 等待卡片...");
+  setLED(true);
+
+  uint8_t uid[7];
+  uint8_t uidLen;
+  unsigned long start = millis();
+
+  while (millis() - start < timeout_ms) {
+    bool ok = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen);
+    if (ok) {
+      String card_uid = "";
+      for (uint8_t i = 0; i < uidLen; i++) {
+        if (i) card_uid += "-";
+        if (uid[i] < 0x10) card_uid += "0";
+        card_uid += String(uid[i], HEX);
+      }
+      card_uid.toUpperCase();
+      Serial.print("[NFC] ✓ 卡号: ");
+      Serial.println(card_uid);
+      setLED(false);
+      return card_uid;
+    }
+    delay(100);
+  }
+  Serial.println("[NFC] ⏱ 超时未读到卡");
+  setLED(false);
+  return String("");
+}
+
+int pollCommand() {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+
+  String url = String(API_POLL) + "?device_id=" + DEVICE_ID;
+  String resp;
+  if (!httpGet(url, resp)) return -1;
+
+  String body = readHttpBody(resp);
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) return -1;
+
+  if (!doc["has_command"].is<bool>() || !doc["has_command"].as<bool>()) return -1;
+  int task_id = doc["task_id"].as<int>();
+  last_command = doc["command"].as<String>();
+  last_payload = doc["payload"].as<String>();
+  Serial.print("[Poll] 任务: "); Serial.print(task_id); Serial.print(" 命令: "); Serial.println(last_command);
+  return task_id;
+}
+
+bool reportCard(const String &card_uid) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  StaticJsonDocument<256> doc;
+  doc["card_uid"] = card_uid;
+  doc["device_id"] = DEVICE_ID;
+  String payload; serializeJson(doc, payload);
+
+  String resp;
+  if (!httpPost(String(API_SCAN), payload, resp)) return false;
+  String body = readHttpBody(resp);
+
+  StaticJsonDocument<256> rdoc;
+  DeserializationError err = deserializeJson(rdoc, body);
+  if (err) {
+    Serial.println("[Report] ✗ 响应 JSON 解析失败");
+    return false;
+  }
+  String action = rdoc["action"].as<String>();
+  String msg    = rdoc["msg"].as<String>();
+  String door   = rdoc["door"].as<String>();
+  Serial.print("[Report] 动作: "); Serial.print(action); Serial.print("，消息: "); Serial.println(msg);
+  Serial.print("[Report] 门号: "); Serial.println(door);
+  
+  // 保存门号信息供 loop 中使用
+  if (door.length() > 0) {
+    last_door = door;
+  }
+  
+  // 注意：不在此处打开门，由 loop 中的调用者根据返回值决定是否打开门
+  if (action == "OPEN") {
+    return true;  // 仅返回 true，不在此处执行 openDoor
   }
   return false;
 }
 
-// 上报 NFC 扫描
-void reportNfcScan(const String& card_uid) {
-  String url = String(server_base) + "/api/hardware/nfc-scan";
-  
-  JsonDocument doc;
-  doc["card_uid"] = card_uid;
-  doc["device_id"] = device_id;
-  
-  String body;
-  serializeJson(doc, body);
-  int code = 0;
-  String resp = httpPostJson(url, body, code);
-  
-  if (code >= 200 && code < 300) {
-    JsonDocument rdoc;
-    DeserializationError err = deserializeJson(rdoc, resp);
-    if (!err) {
-      const char* action = rdoc["action"];
-      if (action && strcmp(action, "OPEN") == 0) {
-        Serial.println(">>> 指令: 开门! <<<");
-        digitalWrite(RELAY_PIN, HIGH);
-        delay(3000);
-        digitalWrite(RELAY_PIN, LOW);
-      }
-    }
-  }
-}
+// ==================== Arduino 入口 ====================
 
-// ======= setup =======
 void setup() {
   Serial.begin(115200);
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);
+  delay(800);
+  Serial.println(); Serial.println();
+  Serial.println("╔════════════════════════════════════════╗");
+  Serial.println("║ ESP8266 + PN532 NFC 固件 (v2)         ║");
+  Serial.println("║ Firmware: 2.0                         ║");
+  Serial.println("╚════════════════════════════════════════╝");
 
-  // 1. 连接 WiFi
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.print("\nConnecting WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print('.');
-  }
-  Serial.println("\nWiFi connected.");
-  Serial.print("IP: "); Serial.println(WiFi.localIP());
+  initLED();
+  initRelay();
+  initPN532();
+  initWiFi();
 
-  device_id = getMacID();
-  
-  // 2. 【关键】启动硬件 I2C
-  // 这行代码会强制锁定 D2(SDA) 和 D1(SCL)
-  Serial.println("Init Hardware I2C (Wire)...");
-  Wire.begin(PN532_SDA, PN532_SCL);
-
-  // 3. 扫描一次总线确认（可选，但推荐）
-  Serial.print("Scanning I2C... ");
-  Wire.beginTransmission(0x24); // 0x24 是 PN532 默认地址
-  if (Wire.endTransmission() == 0) {
-    Serial.println("FOUND PN532 at 0x24!");
-  } else {
-    Serial.println("NOT FOUND at 0x24 (Check wiring!)");
-  }
-
-  // 4. 初始化 NFC 库
-  // 因为使用了 (IRQ, RESET) 构造函数，这里 begin 会自动使用上面启动的 Wire
-  nfc.begin();
-
-  // 5. 检查固件版本
-  uint32_t versiondata = nfc.getFirmwareVersion();
-  if (!versiondata) {
-    Serial.println("❌ 错误: 无法与 PN532 通信 (nfc.begin 失败)");
-    // 如果 I2C 扫描到了但这里失败，通常是库的复位逻辑问题，或者供电不稳
-    // 但硬件连接应该是对的
-    while (1) {
-      delay(1000);
-      Serial.print("Retrying setup... ");
-      // 可以在这里尝试软件复位
-      ESP.restart(); 
+  if (WiFi.status() == WL_CONNECTED) {
+    for (int i = 0; i < 3 && !device_registered; i++) {
+      if (registerDevice()) break;
+      Serial.println("[Setup] 注册失败，3 秒后重试...");
+      delay(3000);
     }
   }
-  
-  // 成功找到!
-  Serial.print("✅ 成功! 发现芯片 PN5"); Serial.println((versiondata>>24) & 0xFF, HEX); 
-  Serial.print("Firmware ver. "); Serial.print((versiondata>>16) & 0xFF, DEC); 
-  Serial.print('.'); Serial.println((versiondata>>8) & 0xFF, DEC);
-  
-  // 配置读取 RFID
-  nfc.SAMConfig();
-  Serial.println("等待刷卡...");
 
-  // 立即尝试注册
-  registerDevice();
+  Serial.println("[Setup] 初始化完成，进入循环");
 }
 
-// ======= loop =======
 void loop() {
-  // 确保已注册
-  if (!isRegistered) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Loop] WiFi 断开，重连...");
+    initWiFi();
+  }
+
+  if (!device_registered && WiFi.status() == WL_CONNECTED) {
     registerDevice();
   }
 
-  // 心跳
-  if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
-    if (sendHeartbeat()) {
-      Serial.println("Heartbeat OK");
+  static unsigned long last_hb = 0;
+  unsigned long now = millis();
+  if (now - last_hb >= HEARTBEAT_INTERVAL) {
+    last_hb = now;
+    sendHeartbeat();
+  }
+
+  static unsigned long last_poll = 0;
+  if (now - last_poll >= POLL_INTERVAL) {
+    last_poll = now;
+    int task_id = pollCommand();
+    if (task_id >= 0) {
+      if (last_command == "SCAN") {
+        Serial.print("[Loop] 执行 SCAN 任务: "); Serial.println(task_id);
+        String uid = readNFCCard();
+        if (uid.length() > 0) {
+          bool ok = reportCard(uid);
+          if (ok) {
+            // 根据后端返回的门号打开对应的门
+            uint8_t door_id = (last_door == "door2") ? 2 : 1;
+            openDoor(door_id, 1500);
+          }
+        } else {
+          Serial.println("[Loop] ✗ 未读到卡或超时");
+        }
+      } else if (last_command == "ENROLL") {
+        Serial.print("[Loop] 执行 ENROLL 任务: "); Serial.println(task_id);
+        String uid = readNFCCard();
+        if (uid.length() > 0) {
+          reportCard(uid);
+          Serial.println("[Loop] ✓ 已将录入卡号上报");
+        } else {
+          Serial.println("[Loop] ✗ 录入模式未读到卡");
+        }
+      } else if (last_command == "OPEN" || last_command == "UNLOCK") {
+        Serial.print("[Loop] 执行 OPEN 任务: "); Serial.println(task_id);
+        uint8_t door_id = 1;
+        if (last_payload.length()) {
+          StaticJsonDocument<64> pdoc;
+          if (deserializeJson(pdoc, last_payload) == DeserializationError::Ok) {
+            String d = pdoc["door_id"].as<String>();
+            if (d == "door2") door_id = 2;
+          }
+        }
+        openDoor(door_id, 1500);
+      } else {
+        Serial.print("[Loop] 未知命令，忽略: "); Serial.println(last_command);
+      }
     }
   }
 
-  // 读卡
-  // readPassiveTargetID 是阻塞的，但设置了超时 100ms
-  // 使用硬件 I2C 后，读取速度会变快很多
-  uint8_t success;
-  uint8_t uid[] = { 0, 0, 0, 0, 0, 0, 0 };
-  uint8_t uidLength;
-  
-  success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 100);
-  
-  if (success) {
-    Serial.println("Found an NFC card!");
-    
-    String card_uid = "";
-    for (uint8_t i = 0; i < uidLength; i++) {
-      if (i > 0) card_uid += "-";
-      if (uid[i] < 0x10) card_uid += "0";
-      card_uid += String(uid[i], HEX);
+  if (CONTINUOUS_SCAN_MODE) {
+    String uid = readNFCCard(200);
+    if (uid.length() > 0) {
+      if (uid != last_uid || millis() - last_uid_time > UID_DEBOUNCE_MS) {
+        last_uid = uid;
+        last_uid_time = millis();
+        bool ok = reportCard(uid);
+        if (ok) {
+          // 根据后端返回的门号打开对应的门
+          uint8_t door_id = (last_door == "door2") ? 2 : 1;
+          openDoor(door_id, 1500);
+        }
+      }
     }
-    card_uid.toUpperCase();
-    Serial.println("UID: " + card_uid);
-    
-    // 上报
-    reportNfcScan(card_uid);
-    
-    // 避免重复读取，稍微延时
-    delay(2000);
   }
-  
-  // 小延时防止 CPU 占用过高
-  delay(10);
+
+  delay(100);
 }
