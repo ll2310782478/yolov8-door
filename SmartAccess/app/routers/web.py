@@ -51,6 +51,12 @@ def web_face():
     return load_template("face.html")
 
 
+@router.get("/face-gate", response_class=HTMLResponse)
+def web_face_gate():
+    """人脸识别门禁终端页面"""
+    return load_template("face_gate.html")
+
+
 @router.get("/hardware", response_class=HTMLResponse)
 def web_hardware():
     """硬件管理页面"""
@@ -61,6 +67,18 @@ def web_hardware():
 def web_test_hardware():
     """硬件测试页面：查看设备注册信息（含IP），并发送指令"""
     return load_template("test_hardware.html")
+
+
+@router.get("/nfc", response_class=HTMLResponse)
+def web_nfc():
+    """NFC 卡片管理页面"""
+    return load_template("nfc.html")
+
+
+@router.get("/remote-door", response_class=HTMLResponse)
+def web_remote_door():
+    """远程开门管理页面"""
+    return load_template("remote_door.html")
 
 
 @router.get("/logs", response_class=HTMLResponse)

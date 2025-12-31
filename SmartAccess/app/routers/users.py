@@ -78,6 +78,7 @@ class FaceDataResponse(BaseModel):
     image_path: str
     is_primary: bool
     is_active: bool
+    access_level: str
     created_at: datetime
     permission_start_date: datetime
     permission_end_date: Optional[datetime]

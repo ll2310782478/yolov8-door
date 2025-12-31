@@ -1,52 +1,127 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>访问日志 - SmartAccess</title>
-    <style>
-        :root { --primary:#667eea; --bg:#f7fafc; }
-        * { box-sizing:border-box; }
-        body { margin:0; background:var(--bg); font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color:#1a202c; }
-        nav { background:#fff; border-bottom:1px solid #e2e8f0; padding:1rem 2rem; display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:10;}
-        nav .left { display:flex; gap:1rem; align-items:center;}
-        nav .brand { font-weight:700; color:var(--primary); }
-        nav .links { display:flex; gap:0.75rem; align-items:center;}
-        nav a, nav button { text-decoration:none; color:#1a202c; background:#edf2f7; padding:0.55rem 0.9rem; border-radius:8px; border:none; cursor:pointer; }
-        main { max-width:1180px; margin:1.5rem auto; padding:0 1.25rem; display:grid; gap:1rem; grid-template-columns:1fr; }
-        .card { background:#fff; border-radius:14px; padding:1.25rem 1.5rem; box-shadow:0 10px 30px rgba(0,0,0,0.06); }
-        h2 { margin:0 0 1rem 0; }
-        label { font-weight:600; color:#2d3748; margin-right:0.5rem; }
-        select, input { padding:0.55rem 0.65rem; border:1px solid #e2e8f0; border-radius:8px; }
-        button.primary { background:var(--primary); color:#fff; border:none; padding:0.65rem 1rem; border-radius:10px; cursor:pointer; }
-        table { width:100%; border-collapse:collapse; margin-top:0.75rem; }
-        th, td { padding:0.65rem; border-bottom:1px solid #e2e8f0; text-align:left; }
-        th { background:#f8fafc; }
-        .status { margin-top:0.75rem; padding:0.75rem; border-radius:10px; background:#edf2f7; color:#1a202c; }
-        .status.good { background:#e6fffa; color:#047857; }
-        .status.bad { background:#fef2f2; color:#b91c1c; }
-    </style>
-</head>
-<body>
-    <nav>
-        <div class="left">
-            <div class="brand">🔐 SmartAccess</div>
-            <div class="links">
-                <a href="/web/dashboard">控制台</a>
-                <a href="/web/users">用户管理</a>
-                <a href="/web/visitors">访客管理</a>
-                <a href="/web/face">人脸识别</a>
-                <a href="/web/hardware">硬件</a>
-            </div>
-        </div>
-        <div class="links">
-            <span id="welcome" style="color:#4a5568;"></span>
-            <button onclick="logout()">退出登录</button>
-        </div>
-    </nav>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>访问日志 - SmartAccess</title>
+        <style>
 
-    <main>
-        <div class="card">
+        /* 左侧导航栏 */
+        .sidebar-header .icon { font-size: 1.8rem; }
+        .sidebar-header .title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            white-space: nowrap;
+            opacity: 1;
+            transition: opacity 0.3s;
+        }
+        .sidebar.collapsed .sidebar-header .title { opacity: 0; width: 0; overflow: hidden; }
+        .sidebar-toggle:hover { background: rgba(255,255,255,0.25); }
+        .nav-link:hover, .nav-link.active {
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+        }
+        .nav-link .icon { font-size: 1.3rem; min-width: 1.3rem; }
+        .nav-link .label {
+            white-space: nowrap;
+            opacity: 1;
+            transition: opacity 0.3s;
+        }
+        .sidebar.collapsed .nav-link .label { opacity: 0; width: 0; overflow: hidden; }
+        /* 主内容区 */
+        .topbar {
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .user-actions { display: flex; gap: 0.75rem; align-items: center; }
+        .user-actions span { color: var(--text-muted); }
+        </style>
+  <link rel="stylesheet" href="/static/css/common.css">
+  </head>
+<body>
+  <script src="/static/js/common.js"></script>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="icon">🔐</span>
+      <span class="title">SmartAccess</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
+    <nav>
+      <ul class="nav-menu">
+        <li class="nav-item">
+          <a href="/web/dashboard" class="nav-link" data-tooltip="仪表盘">
+            <span class="icon">📊</span>
+            <span class="label">仪表盘</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/users" class="nav-link" data-tooltip="用户管理">
+            <span class="icon">👥</span>
+            <span class="label">用户管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/visitors" class="nav-link" data-tooltip="访客管理">
+            <span class="icon">👤</span>
+            <span class="label">访客管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/face" class="nav-link" data-tooltip="人脸识别">
+            <span class="icon">😀</span>
+            <span class="label">人脸识别</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/hardware" class="nav-link" data-tooltip="硬件设备">
+            <span class="icon">🛠️</span>
+            <span class="label">硬件设备</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/nfc" class="nav-link" data-tooltip="NFC管理">
+            <span class="icon">📶</span>
+            <span class="label">NFC管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/remote-door" class="nav-link" data-tooltip="远程开门">
+            <span class="icon">🚪</span>
+            <span class="label">远程开门</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/logs" class="nav-link active" data-tooltip="访问日志">
+            <span class="icon">📜</span>
+            <span class="label">访问日志</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
+            <span class="icon">📖</span>
+            <span class="label">API文档</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div class="main-content">
+    <div class="topbar">
+      <h1>访问日志</h1>
+      <div class="user-actions">
+        <span id="welcome"></span>
+        <button class="btn btn-ghost" onclick="loadLogs()">🔄 刷新</button>
+        <button class="btn btn-primary" onclick="logout()">退出登录</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="card">
             <h2>访问日志</h2>
             <div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center;">
                 <div>
@@ -92,26 +167,21 @@
             </table>
             <div id="status" class="status">等待加载...</div>
         </div>
-    </main>
+    </div>
+  </div>
 
     <script>
-        const token = localStorage.getItem('smartaccess_token');
+
+    const token = localStorage.getItem('smartaccess_token');
         const username = localStorage.getItem('smartaccess_username');
         if (!token) { window.location.href = '/web/auth'; }
         else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
-
-        function logout() {
-            localStorage.removeItem('smartaccess_token');
-            localStorage.removeItem('smartaccess_username');
-            window.location.href = '/web/auth';
-        }
-        function authHeaders(extra = {}) { return { 'Authorization': `Bearer ${token}`, ...extra }; }
+        
         function setStatus(msg, good=false, bad=false) {
             const box = document.getElementById('status');
             box.textContent = msg;
             box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
         }
-
         async function loadLogs() {
             const type = document.getElementById('typeFilter').value;
             const statusF = document.getElementById('statusFilter').value;
@@ -147,7 +217,6 @@
                 setStatus(e.message, false, true);
             }
         }
-
         async function exportCsv() {
             const type = document.getElementById('typeFilter').value;
             const statusF = document.getElementById('statusFilter').value;
@@ -182,9 +251,7 @@
                 setStatus(e.message, false, true);
             }
         }
-
         loadLogs();
     </script>
-</body>
+  </body>
 </html>
-

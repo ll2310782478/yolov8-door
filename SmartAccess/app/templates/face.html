@@ -1,63 +1,262 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>人脸识别管理 - SmartAccess</title>
-    <style>
-        :root { --primary:#667eea; --bg:#f7fafc; }
-        * { box-sizing: border-box; }
-        body { margin:0; background:var(--bg); font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color:#1a202c;}
-        nav { background:#fff; border-bottom:1px solid #e2e8f0; padding:1rem 2rem; display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:10;}
-        nav .left { display:flex; gap:1rem; align-items:center;}
-        nav .brand { font-weight:700; color:var(--primary); }
-        nav .links { display:flex; gap:0.75rem; align-items:center;}
-        nav a, nav button { text-decoration:none; color:#1a202c; background:#edf2f7; padding:0.55rem 0.9rem; border-radius:8px; border:none; cursor:pointer; }
-        main { max-width:1180px; margin:1.5rem auto; padding:0 1.25rem; }
-        .grid { display:grid; grid-template-columns:2fr 1fr; gap:1.25rem; }
-        .card { background:#fff; border-radius:14px; padding:1.25rem 1.5rem; box-shadow:0 10px 30px rgba(0,0,0,0.06); }
-        h2 { margin:0 0 1rem 0; }
-        .video-box { position:relative; background:#000; border-radius:12px; overflow:hidden; }
-        video, canvas { width:100%; border-radius:12px; background:#000; }
-        .actions { display:flex; flex-wrap:wrap; gap:0.6rem; margin:0.9rem 0; }
-        button.primary { background:var(--primary); color:#fff; border:none; padding:0.7rem 1rem; border-radius:10px; cursor:pointer; }
-        button.ghost { background:#edf2f7; border:none; padding:0.7rem 1rem; border-radius:10px; cursor:pointer; }
-        label { font-weight:600; color:#2d3748; display:block; margin:0.5rem 0 0.3rem; }
-        select, input { width:100%; padding:0.65rem 0.75rem; border:1px solid #e2e8f0; border-radius:8px; }
-        .muted { color:#4a5568; font-size:0.9rem; }
-        .status { margin-top:0.75rem; padding:0.75rem; border-radius:10px; background:#edf2f7; color:#1a202c; }
-        .status.good { background:#e6fffa; color:#047857; }
-        .status.bad { background:#fef2f2; color:#b91c1c; }
-        .result-list { display:grid; gap:0.6rem; margin-top:0.5rem; }
-        .result-item { padding:0.65rem 0.75rem; border:1px solid #e2e8f0; border-radius:10px; background:#f8fafc; display:flex; justify-content:space-between; align-items:center; }
-        .badge { padding:0.35rem 0.55rem; border-radius:8px; font-size:0.85rem; }
-        .badge.ok { background:#e6fffa; color:#047857; }
-        .badge.fail { background:#fef2f2; color:#b91c1c; }
-        .tool-box { display:grid; gap:0.75rem; }
-        .tool-box button { width:100%; }
-        .block { margin-top:1rem; }
-        .flex-row { display:flex; gap:0.5rem; align-items:center; }
-        @media (max-width:1080px) { .grid { grid-template-columns:1fr; } }
-    </style>
-</head>
-<body>
-    <nav>
-        <div class="left">
-            <div class="brand">🔐 SmartAccess</div>
-            <div class="links">
-                <a href="/web/dashboard">控制台</a>
-                <a href="/web/users">用户管理</a>
-                <a href="/web/visitors">访客管理</a>
-            </div>
-        </div>
-        <div class="links">
-            <span id="welcome" style="color:#4a5568;"></span>
-            <button onclick="logout()">退出登录</button>
-        </div>
-    </nav>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>人脸识别管理 - SmartAccess</title>
+        <style>
 
-    <main>
-        <div class="grid">
+        /* 页面特定样式 */
+        .grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1.5rem;
+            /* 使用最小高度，允许内容撑开 */
+            min-height: calc(100vh - 140px);
+            align-items: start;
+        }
+        @media (max-width: 1024px) {
+            .grid { grid-template-columns: 1fr; }
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            /* 移除内部滚动，让卡片随内容自适应高度 */
+            height: auto;
+        }
+
+        .video-box {
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            position: relative;
+            width: 100%;
+            /* 移除固定比例，使用自适应高度 */
+            min-height: 480px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        video, canvas {
+            width: 100%;
+            height: 100%;
+            /* 确保视频内容完整显示，不被裁剪 */
+            object-fit: contain;
+            max-height: 720px;
+        }
+
+        .actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        
+        /* 按钮基础样式 */
+        button {
+            padding: 0.65rem 1.2rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        /* 覆盖 common.css 中的按钮样式或补充缺失样式 */
+        button.primary {
+            background: var(--primary);
+            color: white;
+            border: none;
+        }
+        button.primary:hover { background: var(--primary-dark); }
+        
+        button.ghost {
+            background: #f1f5f9;
+            color: #475569;
+            border: none;
+        }
+        button.ghost:hover { background: #e2e8f0; }
+
+        .status {
+            padding: 0.75rem;
+            background: #f8fafc;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            color: #64748b;
+            border: 1px solid #e2e8f0;
+            min-height: 2.5rem;
+        }
+        .status.good { color: var(--success); border-color: var(--success); background: #f0fdf4; }
+        .status.bad { color: var(--danger); border-color: var(--danger); background: #fef2f2; }
+
+        .result-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem;
+            background: #f1f5f9;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .section {
+            margin-top: 1rem;
+            border-top: 1px solid #eee;
+            padding-top: 1rem;
+        }
+
+        .block {
+            background: #f8fafc;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            margin-bottom: 1rem;
+        }
+        .block h3 {
+            margin: 0 0 0.75rem 0;
+            font-size: 1rem;
+            color: #334155;
+        }
+        
+        .tool-box {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+        }
+
+        .flex-row {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        /* 表单元素样式补充 */
+        input, select {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+        label {
+            display: block;
+            font-size: 0.85rem;
+            color: #64748b;
+            margin-bottom: 0.25rem;
+            font-weight: 500;
+        }
+        .muted {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            line-height: 1.4;
+            margin-top: 0.5rem;
+        }
+        </style>
+  <link rel="stylesheet" href="/static/css/common.css">
+  </head>
+<body>
+  <script src="/static/js/common.js"></script>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="icon">🔐</span>
+      <span class="title">SmartAccess</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
+    <nav>
+      <ul class="nav-menu">
+        <li class="nav-item">
+          <a href="/web/dashboard" class="nav-link" data-tooltip="仪表盘">
+            <span class="icon">📊</span>
+            <span class="label">仪表盘</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/users" class="nav-link" data-tooltip="用户管理">
+            <span class="icon">👥</span>
+            <span class="label">用户管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/visitors" class="nav-link" data-tooltip="访客管理">
+            <span class="icon">👤</span>
+            <span class="label">访客管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/face" class="nav-link active" data-tooltip="人脸识别">
+            <span class="icon">😀</span>
+            <span class="label">人脸识别</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/face-gate" class="nav-link" data-tooltip="门禁终端模式" target="_blank">
+            <span class="icon">📺</span>
+            <span class="label">门禁终端</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/hardware" class="nav-link" data-tooltip="硬件设备">
+            <span class="icon">🛠️</span>
+            <span class="label">硬件设备</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/nfc" class="nav-link" data-tooltip="NFC管理">
+            <span class="icon">📶</span>
+            <span class="label">NFC管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/remote-door" class="nav-link" data-tooltip="远程开门">
+            <span class="icon">🚪</span>
+            <span class="label">远程开门</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/logs" class="nav-link" data-tooltip="访问日志">
+            <span class="icon">📜</span>
+            <span class="label">访问日志</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
+            <span class="icon">📖</span>
+            <span class="label">API文档</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div class="main-content">
+    <div class="topbar">
+      <h1>人脸识别管理</h1>
+      <div class="user-actions">
+        <span id="welcome"></span>
+        <button class="btn btn-ghost" onclick="location.reload()">🔄 刷新</button>
+        <button class="btn btn-primary" onclick="logout()">退出登录</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="grid">
             <div class="card">
                 <h2>实时摄像头</h2>
                 <div class="video-box">
@@ -82,9 +281,9 @@
                 <div class="actions">
                     <button class="ghost" onclick="loadFaces()">刷新列表</button>
                 </div>
-                <table style="width:100%; border-collapse:collapse; margin-top:0.5rem;">
+                <table class="table" style="margin-top:0.5rem;">
                     <thead>
-                        <tr><th>ID</th><th>用户</th><th>主脸</th><th>启用</th><th>创建时间</th><th>操作</th></tr>
+                        <tr><th>ID</th><th>用户</th><th>主脸</th><th>启用</th><th>权限</th><th>创建时间</th><th>操作</th></tr>
                     </thead>
                     <tbody id="facesBody"></tbody>
                 </table>
@@ -95,8 +294,19 @@
                 <h2>参数与工具</h2>
                 <label>选择用户（录入/开门使用）</label>
                 <select id="userSelect"></select>
+                
+                <label>门禁权限（录入时使用）</label>
+                <select id="accessLevelSelect">
+                    <option value="door1">门 1 (Door 1)</option>
+                    <option value="door2">门 2 (Door 2)</option>
+                    <option value="all">所有门 (All Doors)</option>
+                </select>
+
                 <label>设备ID（开门指令用）</label>
-                <input id="deviceId" placeholder="例如 door-lock-1">
+                <select id="deviceSelect" onchange="document.getElementById('deviceId').value = this.value" style="margin-bottom: 0.5rem;">
+                    <option value="">-- 加载中 --</option>
+                </select>
+                <input id="deviceId" placeholder="或手动输入设备ID">
                 <label>识别阈值</label>
                 <input id="threshold" type="number" step="0.01" min="0" max="1" value="0.7">
                 <p class="muted">说明：识别成功后调用 `/api/hardware/bluetooth/unlock` 发送开门指令；仍可在后台实现真正的硬件控制逻辑。摄像头在 http 环境需浏览器明确授权，建议使用 https 或 localhost。</p>
@@ -127,14 +337,15 @@
                 </div>
             </div>
         </div>
-    </main>
+    </div>
+  </div>
 
     <script>
-        const token = localStorage.getItem('smartaccess_token');
+
+    const token = localStorage.getItem('smartaccess_token');
         const username = localStorage.getItem('smartaccess_username');
         if (!token) { window.location.href = '/web/auth'; }
         else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
-
         const userSelect = document.getElementById('userSelect');
         const statusBox = document.getElementById('status');
         const resultsBox = document.getElementById('results');
@@ -144,15 +355,7 @@
         let stream;
         const userMap = {}; // username -> id
         let currentUserId = null;
-
-        function logout() {
-            localStorage.removeItem('smartaccess_token');
-            localStorage.removeItem('smartaccess_username');
-            window.location.href = '/web/auth';
-        }
-        function authHeaders(extra = {}) {
-            return { 'Authorization': `Bearer ${token}`, ...extra };
-        }
+        
         function setStatus(msg, good=false, bad=false) {
             statusBox.textContent = msg;
             statusBox.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
@@ -162,7 +365,6 @@
             box.textContent = msg;
             box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
         }
-
         async function loadUsers() {
             try {
                 const res = await fetch('/api/users/', { headers: authHeaders() });
@@ -185,12 +387,10 @@
                 setStatus(e.message, false, true);
             }
         }
-
         userSelect?.addEventListener('change', () => {
             currentUserId = userSelect.value;
             loadFaces();
         });
-
         async function startCamera() {
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 setStatus('当前浏览器不支持摄像头访问', false, true);
@@ -229,7 +429,6 @@
             document.getElementById('stream-btn-text').textContent = enabled ? '恢复摄像头' : '暂停摄像头';
             setStatus(enabled ? '摄像头已暂停' : '摄像头已恢复');
         }
-
         function captureFrame() {
             if (!stream || !video.videoWidth || !video.videoHeight) {
                 setStatus('摄像头未就绪，请先点击启动摄像头并允许权限', false, true);
@@ -245,14 +444,15 @@
                 canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.9);
             });
         }
-
         async function registerFace() {
             const userId = userSelect.value;
+            const accessLevel = document.getElementById('accessLevelSelect').value;
             if (!userId) return setStatus('请先选择用户', false, true);
             setStatus('采集图像并上传中...');
             const blob = await captureFrame();
             const fd = new FormData();
             fd.append('file', blob, 'capture.jpg');
+            fd.append('access_level', accessLevel);
             try {
                 const res = await fetch(`/api/face-recognition/register/${userId}`, {
                     method: 'POST',
@@ -266,7 +466,6 @@
                 setStatus(e.message, false, true);
             }
         }
-
         async function getDeviceInfo() {
             try {
                 const res = await fetch('/api/face-recognition/info', { headers: authHeaders() });
@@ -277,7 +476,6 @@
                 setToolStatus(e.message, false, true);
             }
         }
-
         async function healthCheck() {
             try {
                 const res = await fetch('/api/face-recognition/health', { headers: authHeaders() });
@@ -288,7 +486,6 @@
                 setToolStatus(e.message, false, true);
             }
         }
-
         async function clearCache() {
             try {
                 const res = await fetch('/api/face-recognition/cache/clear', { method:'POST', headers: authHeaders() });
@@ -299,14 +496,15 @@
                 setToolStatus(e.message, false, true);
             }
         }
-
         async function batchRegister() {
             const userId = userSelect.value;
+            const accessLevel = document.getElementById('accessLevelSelect').value;
             const files = document.getElementById('batchFiles').files;
             if (!userId) return setToolStatus('请先选择用户', false, true);
             if (!files || !files.length) return setToolStatus('请选择至少一张图片', false, true);
             const fd = new FormData();
             Array.from(files).forEach(f => fd.append('files', f));
+            fd.append('access_level', accessLevel);
             const url = `/api/face-recognition/batch-register?user_id=${encodeURIComponent(userId)}`;
             try {
                 const res = await fetch(url, { method:'POST', headers: authHeaders(), body: fd });
@@ -317,7 +515,6 @@
                 setToolStatus(e.message, false, true);
             }
         }
-
         async function compareFaces() {
             const f1 = document.getElementById('compare1').files[0];
             const f2 = document.getElementById('compare2').files[0];
@@ -334,7 +531,6 @@
                 setToolStatus(e.message, false, true);
             }
         }
-
         async function recognize() {
             setStatus('识别中...');
             const blob = await captureFrame();
@@ -363,7 +559,6 @@
                 setStatus(e.message, false, true);
             }
         }
-
         function renderResults(list) {
             resultsBox.innerHTML = '';
             if (!list || !list.length) {
@@ -383,26 +578,50 @@
                 resultsBox.appendChild(div);
             });
         }
-
         async function openDoor(forceUserId=null, matchedName=null) {
             const userId = forceUserId || userSelect.value;
             const deviceId = document.getElementById('deviceId').value.trim();
-            if (!userId) return setStatus('请先选择用户', false, true);
             if (!deviceId) return setStatus('请填写设备ID用于开门指令', false, true);
+            
             try {
-                const url = `/api/hardware/bluetooth/unlock?user_id=${encodeURIComponent(userId)}&device_id=${encodeURIComponent(deviceId)}`;
-                const res = await fetch(url, { method:'POST', headers: authHeaders() });
-                const data = await res.json();
-                if (res.ok && data.status === 'success') {
+                // 使用统一远程开门接口，不依赖蓝牙绑定
+                const url = `/api/hardware/remote-unlock`;
+                const body = {
+                    device_id: deviceId,
+                    door_id: "door1",
+                    user_id: userId ? parseInt(userId) : null,
+                    reason: matchedName ? `face_recognition:${matchedName}` : "manual_web_unlock"
+                };
+
+                const res = await fetch(url, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify(body)
+                });
+                
+                let data;
+                const contentType = res.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    data = await res.json();
+                } else {
+                    const text = await res.text();
+                    console.error("Non-JSON response:", text);
+                    // 如果是 500 错误但包含 "Internal Server Error"，尝试解析是否是开门成功后的错误
+                    if (!res.ok) {
+                        throw new Error(`Server Error (${res.status}): ${text.substring(0, 100)}`);
+                    }
+                    throw new Error("Received non-JSON response from server");
+                }
+                
+                if (res.ok && (data.status === 'success' || data.success)) {
                     setStatus(`已发送开门指令${matchedName ? '：' + matchedName : ''}`, true);
                 } else {
-                    throw new Error(data.message || '开门失败');
+                    throw new Error(data.detail || data.message || '开门失败');
                 }
             } catch (e) {
                 setStatus(e.message, false, true);
             }
         }
-
         async function loadFaces() {
             if (!currentUserId) return;
             try {
@@ -416,11 +635,13 @@
                 }
                 data.forEach(f => {
                     const tr = document.createElement('tr');
+                    const accessMap = { 'door1': '门1', 'door2': '门2', 'all': '所有门' };
                     tr.innerHTML = `
                         <td>${f.id}</td>
                         <td>${currentUserId}</td>
                         <td>${f.is_primary ? '是' : '否'}</td>
                         <td>${f.is_active ? '启用' : '禁用'}</td>
+                        <td>${accessMap[f.access_level] || f.access_level || '门1'}</td>
                         <td>${f.created_at ? new Date(f.created_at).toLocaleString('zh-CN') : '-'}</td>
                         <td class="actions">
                             <button class="ghost" onclick="setPrimary(${f.id})">设为主脸</button>
@@ -434,7 +655,6 @@
                 setStatus(e.message, false, true);
             }
         }
-
         async function setPrimary(faceId) {
             try {
                 const res = await fetch(`/api/users/face/${faceId}`, {
@@ -448,7 +668,6 @@
                 loadFaces();
             } catch (e) { setStatus(e.message, false, true); }
         }
-
         async function toggleFace(faceId, enable) {
             try {
                 const res = await fetch(`/api/users/face/${faceId}`, {
@@ -462,7 +681,6 @@
                 loadFaces();
             } catch (e) { setStatus(e.message, false, true); }
         }
-
         async function deleteFace(faceId) {
             if (!confirm('确定删除此人脸？')) return;
             try {
@@ -474,11 +692,36 @@
             } catch (e) { setStatus(e.message, false, true); }
         }
 
+        async function loadDevices() {
+            try {
+                const res = await fetch('/api/hardware/devices', { headers: authHeaders() });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '加载设备失败');
+                const sel = document.getElementById('deviceSelect');
+                sel.innerHTML = '<option value="">-- 选择设备 --</option>';
+                data.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d.device_id;
+                    opt.textContent = `${d.device_name} (${d.device_id})`;
+                    sel.appendChild(opt);
+                });
+                // 如果只有一个设备，自动选中
+                if (data.length > 0) {
+                    sel.value = data[0].device_id;
+                    document.getElementById('deviceId').value = data[0].device_id;
+                }
+            } catch (e) {
+                console.error('加载设备列表失败', e);
+                const sel = document.getElementById('deviceSelect');
+                sel.innerHTML = '<option value="">加载失败</option>';
+            }
+        }
+
         // init
         loadUsers();
+        loadDevices();
         // 自动尝试启动摄像头，若被浏览器策略阻止，用户可手动点击“启动摄像头”
         startCamera().catch(()=>{});
     </script>
-</body>
+  </body>
 </html>
-

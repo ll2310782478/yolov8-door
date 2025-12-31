@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智能门禁终端 - SmartAccess</title>
+  <style>
+    body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        color: #fff;
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+    }
+    .video-container {
+        flex: 1;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }
+    video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transform: scaleX(-1); /* 镜像显示，更符合门禁体验 */
+    }
+    canvas { display: none; }
+    
+    /* 顶部信息栏 */
+    .header-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        padding: 20px;
+        box-sizing: border-box;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        z-index: 10;
+        background: linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%);
+    }
+    
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 1.2rem;
+        font-weight: 600;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+    .brand-icon { font-size: 1.5rem; }
+    
+    .clock-widget {
+        text-align: right;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+    .time { font-size: 2.5rem; font-weight: 300; line-height: 1; }
+    .date { font-size: 1rem; opacity: 0.8; margin-top: 5px; }
+
+    /* 扫描动画 */
+    .scan-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        background: radial-gradient(circle, transparent 50%, rgba(0,0,0,0.3) 100%);
+    }
+    .scan-line {
+        position: absolute;
+        width: 100%;
+        height: 2px;
+        background: rgba(74, 222, 128, 0.6);
+        box-shadow: 0 0 15px rgba(74, 222, 128, 0.8);
+        top: 0;
+        animation: scan 3s ease-in-out infinite;
+        display: none;
+    }
+    .scan-line.active { display: block; }
+    
+    @keyframes scan {
+        0% { top: 10%; opacity: 0; }
+        10% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { top: 90%; opacity: 0; }
+    }
+
+    /* 识别结果弹窗 */
+    .result-card {
+        position: absolute;
+        bottom: 15%;
+        left: 50%;
+        transform: translateX(-50%) translateY(20px);
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(10px);
+        padding: 25px 40px;
+        border-radius: 20px;
+        text-align: center;
+        color: #1f2937;
+        box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+        opacity: 0;
+        transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        z-index: 20;
+        min-width: 320px;
+        border: 1px solid rgba(255,255,255,0.5);
+    }
+    .result-card.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+    .result-card.success { border-left: 6px solid #10b981; }
+    .result-card.info { border-left: 6px solid #3b82f6; }
+    .result-card.fail { border-left: 6px solid #ef4444; }
+    
+    .result-icon {
+        font-size: 3rem;
+        margin-bottom: 10px;
+        display: block;
+    }
+    .result-title {
+        font-size: 1.8rem;
+        font-weight: 700;
+        margin: 0;
+        color: #111;
+    }
+    .result-desc {
+        font-size: 1.1rem;
+        color: #6b7280;
+        margin: 5px 0 0 0;
+    }
+
+    /* 设置按钮 */
+    .settings-btn {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: rgba(0,0,0,0.3);
+        color: rgba(255,255,255,0.5);
+        border: none;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        cursor: pointer;
+        z-index: 50;
+        transition: all 0.3s;
+    }
+    .settings-btn:hover {
+        background: rgba(0,0,0,0.6);
+        color: #fff;
+    }
+
+    /* 设置面板 */
+    .settings-panel {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,0,0,0.85);
+        backdrop-filter: blur(5px);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+    }
+    .settings-panel.show {
+        opacity: 1;
+        pointer-events: auto;
+    }
+    .settings-box {
+        background: #fff;
+        color: #333;
+        width: 90%;
+        max-width: 400px;
+        padding: 30px;
+        border-radius: 16px;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    }
+    .settings-box h3 { margin-top: 0; font-size: 1.5rem; border-bottom: 1px solid #eee; padding-bottom: 15px; }
+    .form-group { margin-bottom: 15px; }
+    .form-group label { display: block; margin-bottom: 5px; font-weight: 500; color: #4b5563; }
+    .form-group input, .form-group select {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        font-size: 1rem;
+        box-sizing: border-box; /* Fix width overflow */
+    }
+    .btn {
+        width: 100%;
+        padding: 12px;
+        border: none;
+        border-radius: 8px;
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s;
+    }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: #f3f4f6; color: #4b5563; margin-top: 10px; }
+    .btn-secondary:hover { background: #e5e7eb; }
+
+  </style>
+</head>
+<body>
+    <div class="video-container">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+        
+        <div class="scan-overlay"></div>
+        <div class="scan-line" id="scanLine"></div>
+        
+        <div class="header-bar">
+            <div class="brand">
+                <span class="brand-icon">🔐</span>
+                <span>SmartAccess 门禁终端</span>
+            </div>
+            <div class="clock-widget">
+                <div class="time" id="timeDisplay">00:00</div>
+                <div class="date" id="dateDisplay">2024-01-01 星期一</div>
+            </div>
+        </div>
+
+        <div id="resultCard" class="result-card">
+            <span class="result-icon" id="resultIcon">✅</span>
+            <h2 class="result-title" id="resultTitle">识别成功</h2>
+            <p class="result-desc" id="resultDesc">欢迎回来</p>
+        </div>
+    </div>
+
+    <button class="settings-btn" onclick="toggleSettings(true)">⚙️</button>
+
+    <div id="settingsPanel" class="settings-panel">
+        <div class="settings-box">
+            <h3>终端配置</h3>
+            <div class="form-group">
+                <label>绑定门禁设备</label>
+                <select id="deviceSelect"></select>
+            </div>
+            <div class="form-group">
+                <label>控制门号</label>
+                <select id="doorSelect">
+                    <option value="door1">门 1 (Door 1)</option>
+                    <option value="door2">门 2 (Door 2)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>识别阈值 (0.1 - 1.0)</label>
+                <input id="threshold" type="number" step="0.05" min="0.1" max="1.0" value="0.75">
+            </div>
+            <div class="form-group">
+                <label>扫描间隔 (毫秒)</label>
+                <input id="interval" type="number" step="100" min="500" value="1000">
+            </div>
+            <button class="btn btn-primary" onclick="saveSettings()">保存并运行</button>
+            <button class="btn btn-secondary" onclick="location.href='/web/face'">退出到管理后台</button>
+        </div>
+    </div>
+
+    <script>
+        const token = localStorage.getItem('smartaccess_token');
+        // 门禁终端不需要登录即可使用 (Kiosk Mode)
+        // if (!token) window.location.href = '/web/auth';
+        
+        // DOM Elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const resultCard = document.getElementById('resultCard');
+        const resultTitle = document.getElementById('resultTitle');
+        const resultDesc = document.getElementById('resultDesc');
+        const resultIcon = document.getElementById('resultIcon');
+        const scanLine = document.getElementById('scanLine');
+        
+        // State
+        let config = {
+            deviceId: localStorage.getItem('gate_device_id') || '',
+            doorId: localStorage.getItem('gate_door_id') || 'door1',
+            threshold: parseFloat(localStorage.getItem('gate_threshold') || '0.75'),
+            interval: parseInt(localStorage.getItem('gate_interval') || '1000')
+        };
+        
+        let isRunning = false;
+        let isProcessing = false;
+        let userMap = {};
+        
+        // Cooldown tracking: username -> timestamp (ms)
+        const unlockCooldowns = {};
+        const COOLDOWN_TIME = 10000; // 10 seconds
+
+        // Initialization
+        async function init() {
+            startClock();
+            await loadUsers();
+            await loadDevices();
+            
+            if (!config.deviceId) {
+                toggleSettings(true);
+            } else {
+                startCamera();
+            }
+        }
+
+        function startClock() {
+            const update = () => {
+                const now = new Date();
+                document.getElementById('timeDisplay').textContent = now.toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+                document.getElementById('dateDisplay').textContent = now.toLocaleDateString('zh-CN', {year:'numeric', month:'long', day:'numeric', weekday:'long'});
+            };
+            update();
+            setInterval(update, 1000);
+        }
+
+        function toggleSettings(show) {
+            const panel = document.getElementById('settingsPanel');
+            if (show) {
+                panel.classList.add('show');
+                document.getElementById('threshold').value = config.threshold;
+                document.getElementById('interval').value = config.interval;
+                document.getElementById('doorSelect').value = config.doorId;
+                isRunning = false; // Pause recognition
+                scanLine.classList.remove('active');
+            } else {
+                panel.classList.remove('show');
+                if (config.deviceId) startCamera();
+            }
+        }
+
+        function saveSettings() {
+            const devId = document.getElementById('deviceSelect').value;
+            if (!devId) return alert('请选择绑定的设备');
+            
+            config.deviceId = devId;
+            config.doorId = document.getElementById('doorSelect').value;
+            config.threshold = parseFloat(document.getElementById('threshold').value);
+            config.interval = parseInt(document.getElementById('interval').value);
+            
+            localStorage.setItem('gate_device_id', config.deviceId);
+            localStorage.setItem('gate_door_id', config.doorId);
+            localStorage.setItem('gate_threshold', config.threshold);
+            localStorage.setItem('gate_interval', config.interval);
+            
+            toggleSettings(false);
+        }
+
+        async function loadUsers() {
+            try {
+                const res = await fetch('/api/users/', { headers: {'Authorization': `Bearer ${token}`} });
+                const data = await res.json();
+                data.forEach(u => userMap[u.username] = u.id);
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadDevices() {
+            try {
+                const res = await fetch('/api/hardware/devices', { headers: {'Authorization': `Bearer ${token}`} });
+                const data = await res.json();
+                const sel = document.getElementById('deviceSelect');
+                sel.innerHTML = '<option value="">-- 请选择此终端控制的门 --</option>';
+                data.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d.device_id;
+                    opt.textContent = d.device_name || d.device_id;
+                    if (d.device_id === config.deviceId) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        async function startCamera() {
+            if (isRunning) return;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user', width: {ideal: 1280}, height: {ideal: 720} } 
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    isRunning = true;
+                    scanLine.classList.add('active');
+                    loop();
+                };
+            } catch (e) {
+                alert('无法启动摄像头: ' + e.message);
+            }
+        }
+
+        async function loop() {
+            if (!isRunning) return;
+            if (!isProcessing) {
+                await processFrame();
+            }
+            setTimeout(loop, config.interval);
+        }
+
+        async function processFrame() {
+            isProcessing = true;
+            try {
+                const blob = await captureFrame();
+                const fd = new FormData();
+                fd.append('file', blob, 'capture.jpg');
+                
+                const res = await fetch('/api/face-recognition/recognize', {
+                    method: 'POST',
+                    headers: {'Authorization': `Bearer ${token}`},
+                    body: fd
+                });
+                
+                if (res.ok) {
+                    const results = await res.json();
+                    // Find best match
+                    const match = results.find(r => r.status === 'recognized' && r.similarity >= config.threshold);
+                    
+                    if (match) {
+                        await handleMatch(match);
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+            } finally {
+                isProcessing = false;
+            }
+        }
+
+        function captureFrame() {
+            const w = video.videoWidth;
+            const h = video.videoHeight;
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            // Mirror the capture if video is mirrored via CSS? 
+            // Actually backend expects normal image. CSS transform scaleX(-1) only affects display.
+            // So we draw normally.
+            ctx.drawImage(video, 0, 0);
+            return new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+        }
+
+        async function handleMatch(match) {
+            const now = Date.now();
+            const lastUnlock = unlockCooldowns[match.name] || 0;
+            const timeSinceLast = now - lastUnlock;
+
+            // 暂停扫描线
+            scanLine.classList.remove('active');
+
+            if (timeSinceLast < COOLDOWN_TIME) {
+                // Cooldown active
+                showResult('info', '门已开启', `${match.name}，请通行`);
+                // Wait a bit then resume
+                await waitAndResume(2000);
+                return;
+            }
+
+            // Update cooldown
+            unlockCooldowns[match.name] = now;
+
+            // Show success
+            const isVisitor = !userMap[match.name];
+            const title = isVisitor ? '访客通行' : '识别成功';
+            showResult('success', title, `欢迎，${match.name}`);
+
+            // Trigger unlock
+            const userId = userMap[match.name];
+            
+            // Allow unlock if user exists OR if it's a recognized visitor (QR code)
+            if (userId || match.status === 'recognized') {
+                try {
+                    const userAccessLevel = match.access_level || 'door1';
+                    const targetDoor = config.doorId; // 'door1' or 'door2'
+
+                    // Check permission
+                    // If user has 'all', they can open any door.
+                    // If user has 'door1', they can only open door1.
+                    // If user has 'door2', they can only open door2.
+                    
+                    let hasPermission = false;
+                    if (userAccessLevel === 'all') {
+                        hasPermission = true;
+                    } else if (userAccessLevel === targetDoor) {
+                        hasPermission = true;
+                    }
+
+                    if (!hasPermission) {
+                        showResult('fail', '无权访问', `${match.name}，您无权开启此门 (${targetDoor})`);
+                        await waitAndResume(3000);
+                        return;
+                    }
+
+                    const payload = {
+                        device_id: config.deviceId,
+                        door_id: targetDoor,
+                        reason: isVisitor ? `qrcode_gate:${match.name}` : `face_gate:${match.name}`
+                    };
+                    if (userId) payload.user_id = userId;
+
+                    await fetch('/api/hardware/remote-unlock', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(payload)
+                    });
+                } catch(e) { console.error('Unlock failed', e); }
+            }
+
+            // Wait longer for success
+            await waitAndResume(3000);
+        }
+
+        async function waitAndResume(ms) {
+            await new Promise(r => setTimeout(r, ms));
+            hideResult();
+            if (isRunning) scanLine.classList.add('active');
+        }
+
+        function showResult(type, title, desc) {
+            resultCard.className = `result-card show ${type}`;
+            resultTitle.textContent = title;
+            resultDesc.textContent = desc;
+            
+            if (type === 'success') resultIcon.textContent = '✅';
+            else if (type === 'info') resultIcon.textContent = '🔓';
+            else resultIcon.textContent = '❌';
+        }
+
+        function hideResult() {
+            resultCard.classList.remove('show');
+        }
+
+        init();
+    </script>
+</body>
+</html>

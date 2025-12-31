@@ -1,75 +1,57 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>访客管理 - SmartAccess</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        <style>
+
+        /* 左侧导航栏 */
+        .sidebar-header .icon { font-size: 1.8rem; }
+        .sidebar-header .title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            white-space: nowrap;
+            opacity: 1;
+            transition: opacity 0.3s;
         }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f5f5f5;
-            padding: 0;
+        .sidebar.collapsed .sidebar-header .title { opacity: 0; width: 0; overflow: hidden; }
+        .sidebar-toggle:hover { background: rgba(255,255,255,0.25); }
+        .nav-link:hover, .nav-link.active {
+            background: rgba(255,255,255,0.15);
+            color: #fff;
         }
-        nav {
+        .nav-link .icon { font-size: 1.3rem; min-width: 1.3rem; }
+        .nav-link .label {
+            white-space: nowrap;
+            opacity: 1;
+            transition: opacity 0.3s;
+        }
+        .sidebar.collapsed .nav-link .label { opacity: 0; width: 0; overflow: hidden; }
+        /* 主内容区 */
+        .topbar {
             background: #fff;
-            border-bottom: 1px solid #e2e8f0;
-            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 1.5rem;
             display: flex;
-            align-items: center;
             justify-content: space-between;
-            position: sticky;
-            top: 0;
-            z-index: 10;
+            align-items: center;
         }
-        nav .left { display: flex; gap: 1rem; align-items: center; }
-        nav .brand { font-weight: 700; color: #667eea; }
-        nav .links { display: flex; gap: 0.75rem; align-items: center; }
-        nav a, nav button {
-            text-decoration: none;
-            color: #1a202c;
-            background: #edf2f7;
-            padding: 0.55rem 0.9rem;
-            border-radius: 8px;
-            border: none;
-            cursor: pointer;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-            padding: 2rem;
-        }
-        
-        h1 {
-            color: #333;
-            margin-bottom: 2rem;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 1rem;
-        }
-        
+        .user-actions { display: flex; gap: 0.75rem; align-items: center; }
+        .user-actions span { color: var(--text-muted); }
+        /* 访客管理特定样式 */
         .controls {
             display: flex;
             gap: 1rem;
             margin-bottom: 2rem;
             flex-wrap: wrap;
         }
-        
         input, button {
             padding: 0.75rem 1rem;
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 1rem;
         }
-        
         button {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -77,14 +59,11 @@
             cursor: pointer;
             transition: transform 0.2s;
         }
-        
         button:hover {
             transform: translateY(-2px);
         }
-
         .row { display:flex; gap:0.5rem; flex-wrap:wrap; }
         .row input, .row select { flex:1 1 48%; min-width:220px; }
-        
         .visitor-card {
             background: #f9f9f9;
             border-left: 4px solid #667eea;
@@ -95,57 +74,19 @@
             justify-content: space-between;
             align-items: center;
         }
-        
         .visitor-info h3 {
             color: #333;
             margin-bottom: 0.5rem;
         }
-        
         .visitor-info p {
             color: #666;
             font-size: 0.9rem;
             margin: 0.25rem 0;
         }
-        
         .visitor-actions {
             display: flex;
             gap: 0.5rem;
         }
-        
-        .btn-small {
-            padding: 0.5rem 0.75rem;
-            font-size: 0.9rem;
-        }
-        
-        .btn-checkout {
-            background-color: #f44336;
-        }
-        
-        .btn-qrcode {
-            background-color: #2196F3;
-        }
-        
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
-        }
-        
-        .modal-content {
-            background-color: white;
-            margin: 5% auto;
-            padding: 2rem;
-            border-radius: 8px;
-            width: 90%;
-            max-width: 500px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        }
-        
         .close {
             color: #aaa;
             float: right;
@@ -153,22 +94,15 @@
             font-weight: bold;
             cursor: pointer;
         }
-        
         .close:hover {
             color: black;
         }
-        
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        
         label {
             display: block;
             margin-bottom: 0.5rem;
             font-weight: bold;
             color: #333;
         }
-        
         input[type="text"],
         input[type="email"],
         textarea {
@@ -178,46 +112,109 @@
             border-radius: 4px;
             font-size: 1rem;
         }
-        
         .qrcode-display {
             text-align: center;
             padding: 2rem;
         }
-        
         .qrcode-display img {
             max-width: 300px;
             border: 2px solid #667eea;
             padding: 1rem;
         }
-    </style>
-</head>
+        </style>
+  <link rel="stylesheet" href="/static/css/common.css">
+  </head>
 <body>
+  <script src="/static/js/common.js"></script>
+  <!-- 左侧导航栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="icon">🔐</span>
+      <span class="title">SmartAccess</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
     <nav>
-        <div class="left">
-            <div class="brand">🔐 SmartAccess</div>
-            <div class="links">
-                <a href="/web/dashboard">控制台</a>
-                <a href="/web/users">用户管理</a>
-            </div>
-        </div>
-        <div class="links">
-            <span id="welcome" style="color:#4a5568;"></span>
-            <button onclick="logout()">退出登录</button>
-        </div>
+      <ul class="nav-menu">
+        <li class="nav-item">
+          <a href="/web/dashboard" class="nav-link" data-tooltip="仪表盘">
+            <span class="icon">📊</span>
+            <span class="label">仪表盘</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/users" class="nav-link" data-tooltip="用户管理">
+            <span class="icon">👥</span>
+            <span class="label">用户管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/visitors" class="nav-link active" data-tooltip="访客管理">
+            <span class="icon">👤</span>
+            <span class="label">访客管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/face" class="nav-link" data-tooltip="人脸识别">
+            <span class="icon">😀</span>
+            <span class="label">人脸识别</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/hardware" class="nav-link" data-tooltip="硬件设备">
+            <span class="icon">🛠️</span>
+            <span class="label">硬件设备</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/nfc" class="nav-link" data-tooltip="NFC管理">
+            <span class="icon">📶</span>
+            <span class="label">NFC管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/remote-door" class="nav-link" data-tooltip="远程开门">
+            <span class="icon">🚪</span>
+            <span class="label">远程开门</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/logs" class="nav-link" data-tooltip="访问日志">
+            <span class="icon">📜</span>
+            <span class="label">访问日志</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
+            <span class="icon">📖</span>
+            <span class="label">API文档</span>
+          </a>
+        </li>
+      </ul>
     </nav>
-    <div class="container">
-        <h1>👤 访客管理</h1>
-        
+  </aside>
+
+  <!-- 主内容区 -->
+  <div class="main-content">
+    <div class="topbar">
+      <h1>访客管理</h1>
+      <div class="user-actions">
+        <span id="welcome"></span>
+        <button class="btn btn-ghost" onclick="loadVisitors()">🔄 刷新</button>
+        <button class="btn btn-primary" onclick="logout()">退出登录</button>
+      </div>
+    </div>
+
+    <div class="content">
         <div class="controls">
             <input type="text" id="searchInput" placeholder="搜索访客名称或公司...">
             <button onclick="openAddVisitorModal()">➕ 添加新访客</button>
+            <button onclick="openEmailConfigModal()">📧 邮件配置</button>
             <button onclick="loadVisitors()">刷新</button>
         </div>
         
         <div id="visitorsList">
             <!-- 动态生成的访客卡片 -->
         </div>
-    </div>
     
     <!-- 添加访客模态框 -->
     <div id="visitorModal" class="modal">
@@ -250,10 +247,65 @@
                 
                 <div class="form-group">
                     <label for="visitorPurpose">访问目的</label>
-                    <textarea id="visitorPurpose" rows="3"></textarea>
+                    <textarea id="visitorPurpose" rows="2"></textarea>
+                </div>
+
+                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee;">
+                    <h3>权限设置</h3>
+                    <div class="row">
+                        <div class="form-group" style="flex:1 1 48%;">
+                            <label for="startTime">生效时间</label>
+                            <input type="datetime-local" id="startTime">
+                        </div>
+                        <div class="form-group" style="flex:1 1 48%;">
+                            <label for="endTime">失效时间</label>
+                            <input type="datetime-local" id="endTime">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="form-group" style="flex:1 1 48%;">
+                            <label for="maxUses">最大使用次数 (0为不限)</label>
+                            <input type="number" id="maxUses" value="1" min="0">
+                        </div>
+                        <div class="form-group" style="flex:1 1 48%;">
+                            <label for="accessLevel">门禁权限</label>
+                            <select id="accessLevel" style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px; font-size: 1rem;">
+                                <option value="door1">门 1 (Door 1)</option>
+                                <option value="door2">门 2 (Door 2)</option>
+                                <option value="all">所有门 (All Doors)</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
                 
-                <button type="submit">创建访客</button>
+                <button type="submit" style="margin-top: 1rem;">创建访客</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 邮件配置模态框 -->
+    <div id="emailConfigModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEmailConfigModal()">&times;</span>
+            <h2>邮件服务器配置</h2>
+            <form id="emailConfigForm">
+                <div class="form-group">
+                    <label for="smtpServer">SMTP 服务器</label>
+                    <input type="text" id="smtpServer" placeholder="smtp.gmail.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="smtpPort">SMTP 端口</label>
+                    <input type="number" id="smtpPort" placeholder="465" required>
+                </div>
+                <div class="form-group">
+                    <label for="emailUser">邮箱账号</label>
+                    <input type="email" id="emailUser" required>
+                </div>
+                <div class="form-group">
+                    <label for="emailPassword">邮箱密码/授权码</label>
+                    <input type="password" id="emailPassword" required>
+                </div>
+                <button type="submit">保存配置</button>
             </form>
         </div>
     </div>
@@ -268,8 +320,11 @@
             </div>
         </div>
     </div>
-    
+    </div>
+  </div>
+
     <script>
+
         const token = localStorage.getItem('smartaccess_token');
         const username = localStorage.getItem('smartaccess_username');
         if (!token) {
@@ -277,17 +332,7 @@
         } else {
             document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录';
         }
-
-        function authHeaders() {
-            return token ? { 'Authorization': `Bearer ${token}` } : {};
-        }
-
-        function logout() {
-            localStorage.removeItem('smartaccess_token');
-            localStorage.removeItem('smartaccess_username');
-            window.location.href = '/web/auth';
-        }
-
+        
         // 加载访客列表
         function loadVisitors() {
             fetch('/api/visitors/?show_checked_out=false', { headers: authHeaders() })
@@ -299,21 +344,28 @@
                 .then(data => {
                     const list = document.getElementById('visitorsList');
                     list.innerHTML = '';
-                    
                     if (data.length === 0) {
                         list.innerHTML = '<p style="text-align: center; color: #999;">暂无访客记录</p>';
                         return;
                     }
-                    
                     data.forEach(visitor => {
                         const card = document.createElement('div');
                         card.className = 'visitor-card';
+                        
+                        let accessText = '门 1';
+                        if (visitor.access_level === 'door2') accessText = '门 2';
+                        if (visitor.access_level === 'all') accessText = '所有门';
+                        
+                        const usesText = visitor.max_uses > 0 ? `${visitor.accessed_count} / ${visitor.max_uses}` : `${visitor.accessed_count} / 不限`;
+
                         card.innerHTML = `
                             <div class="visitor-info">
                                 <h3>${visitor.name}</h3>
                                 <p>公司: ${visitor.company || '-'}</p>
                                 <p>电话: ${visitor.phone || '-'}</p>
                                 <p>目的: ${visitor.purpose || '-'}</p>
+                                <p>权限: <strong>${accessText}</strong></p>
+                                <p>使用次数: ${usesText}</p>
                                 <p>入场时间: ${new Date(visitor.check_in_time).toLocaleString('zh-CN')}</p>
                             </div>
                             <div class="visitor-actions">
@@ -328,43 +380,40 @@
                 })
                 .catch(error => console.error('Error:', error));
         }
-        
         function openAddVisitorModal() {
             document.getElementById('visitorForm').reset();
+            // 设置默认时间
+            const now = new Date();
+            const tomorrow = new Date(now);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            
+            // 格式化为 datetime-local 需要的格式 (YYYY-MM-DDTHH:mm)
+            const formatDateTime = (date) => {
+                const pad = (n) => n < 10 ? '0' + n : n;
+                return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+            };
+            
+            document.getElementById('startTime').value = formatDateTime(now);
+            document.getElementById('endTime').value = formatDateTime(tomorrow);
+            
             document.getElementById('visitorModal').style.display = 'block';
         }
-        
         function closeVisitorModal() {
             document.getElementById('visitorModal').style.display = 'none';
         }
-        
         function closeQrcodeModal() {
             document.getElementById('qrcodeModal').style.display = 'none';
         }
-        
         function showQrcode(visitorId) {
-            fetch(`/api/visitors/${visitorId}/qrcode`, { headers: authHeaders() })
-                .then(async response => {
-                    const data = await response.json();
-                    if (!response.ok) throw new Error(data.detail || '获取二维码失败');
-                    return data;
-                })
-                .then(data => {
-                    if (data.status === 'expired') {
-                        alert('二维码已过期');
-                        return;
-                    }
-                    
-                    const qrcodeDisplay = document.getElementById('qrcodeDisplay');
-                    qrcodeDisplay.innerHTML = `
-                        <img src="${data.qrcode_path}" alt="访客二维码">
-                        <p>有效期: ${new Date(data.expires_at).toLocaleString('zh-CN')}</p>
-                    `;
-                    document.getElementById('qrcodeModal').style.display = 'block';
-                })
-                .catch(error => console.error('Error:', error));
+            // 直接使用新的图片端点
+            const imgUrl = `/api/visitors/${visitorId}/qrcode/image?token=${token}`;
+            const qrcodeDisplay = document.getElementById('qrcodeDisplay');
+            qrcodeDisplay.innerHTML = `
+                <img src="${imgUrl}" alt="访客二维码" onerror="this.src=''; this.alt='二维码加载失败'">
+                <p>请使用手机拍照或截图保存</p>
+            `;
+            document.getElementById('qrcodeModal').style.display = 'block';
         }
-
         function sendQrcode(visitorId, via) {
             fetch(`/api/visitors/${visitorId}/send-qrcode?send_via=${via}`, {
                 method: 'POST',
@@ -380,7 +429,6 @@
             })
             .catch(error => alert(error.message));
         }
-        
         function checkoutVisitor(visitorId) {
             if (confirm('确定访客已离场？')) {
                 fetch(`/api/visitors/${visitorId}/checkout`, {
@@ -399,19 +447,28 @@
                 .catch(error => alert(error.message));
             }
         }
-        
-        // 表单提交
+        // 访客表单提交
         document.getElementById('visitorForm').addEventListener('submit', function(e) {
             e.preventDefault();
             
+            // 构建请求数据
             const visitorData = {
                 name: document.getElementById('visitorName').value,
                 phone: document.getElementById('visitorPhone').value,
                 email: document.getElementById('visitorEmail').value,
                 company: document.getElementById('visitorCompany').value,
-                purpose: document.getElementById('visitorPurpose').value
+                purpose: document.getElementById('visitorPurpose').value,
+                // 权限数据
+                start_time: document.getElementById('startTime').value,
+                end_time: document.getElementById('endTime').value,
+                max_uses: parseInt(document.getElementById('maxUses').value) || 0,
+                access_level: document.getElementById('accessLevel').value
             };
             
+            // 确保时间格式包含秒，如果后端需要 ISO 格式
+            if (visitorData.start_time) visitorData.start_time = new Date(visitorData.start_time).toISOString();
+            if (visitorData.end_time) visitorData.end_time = new Date(visitorData.end_time).toISOString();
+
             fetch('/api/visitors/', {
                 method: 'POST',
                 headers: {
@@ -432,9 +489,53 @@
             })
             .catch(error => alert(error.message));
         });
-        
+
+        // 邮件配置相关
+        function openEmailConfigModal() {
+            fetch('/api/visitors/email-config', { headers: authHeaders() })
+                .then(res => res.json())
+                .then(data => {
+                    if (data) {
+                        document.getElementById('smtpServer').value = data.smtp_server || '';
+                        document.getElementById('smtpPort').value = data.smtp_port || '';
+                        document.getElementById('emailUser').value = data.email_user || '';
+                        // 密码通常不回显，或者回显占位符
+                        document.getElementById('emailPassword').value = ''; 
+                    }
+                    document.getElementById('emailConfigModal').style.display = 'block';
+                })
+                .catch(err => console.error(err));
+        }
+        function closeEmailConfigModal() {
+            document.getElementById('emailConfigModal').style.display = 'none';
+        }
+        document.getElementById('emailConfigForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const configData = {
+                smtp_server: document.getElementById('smtpServer').value,
+                smtp_port: parseInt(document.getElementById('smtpPort').value),
+                email_user: document.getElementById('emailUser').value,
+                email_password: document.getElementById('emailPassword').value
+            };
+            
+            fetch('/api/visitors/email-config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...authHeaders()
+                },
+                body: JSON.stringify(configData)
+            })
+            .then(async response => {
+                if (!response.ok) throw new Error('保存配置失败');
+                alert('邮件配置已保存');
+                closeEmailConfigModal();
+            })
+            .catch(error => alert(error.message));
+        });
+
         // 页面加载时获取访客列表
         loadVisitors();
-    </script>
-</body>
+      </script>
+  </body>
 </html>

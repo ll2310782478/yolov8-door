@@ -3,506 +3,432 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NFC 卡片管理 - SmartAccess</title>
-  <link rel="stylesheet" href="/static/css/bootstrap.min.css">
-  <style>
-    :root {
-      --primary: #667eea;
-      --success: #48bb78;
-      --danger: #f56565;
-      --warning: #ed8936;
-      --bg: #f7fafc;
-      --border: #e2e8f0;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      color: #1a202c;
-    }
-    header {
-      background: #fff;
-      padding: 1.25rem 2rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-      margin-bottom: 2rem;
-    }
-    .header-content {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-    .header-title {
-      font-weight: 700;
-      font-size: 1.5rem;
-      color: var(--primary);
-      margin: 0;
-    }
-    .header-subtitle {
-      color: #718096;
-      margin: 0;
-      font-size: 0.95rem;
-    }
-    .back-btn {
-      background: #edf2f7;
-      border: none;
-      padding: 0.65rem 1rem;
-      border-radius: 10px;
-      cursor: pointer;
-      color: #1a202c;
-      font-weight: 500;
-    }
-    .back-btn:hover {
-      background: #e2e8f0;
-    }
-    main {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 0 1.5rem 2rem;
-    }
-    .card-box {
-      background: #fff;
-      border-radius: 14px;
-      padding: 2rem;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.06);
-      margin-bottom: 2rem;
-    }
-    .section-title {
-      font-size: 1.1rem;
-      font-weight: 600;
-      color: #1a202c;
-      margin-bottom: 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .section-title::before {
-      content: '';
-      width: 4px;
-      height: 24px;
-      background: var(--primary);
-      border-radius: 2px;
-    }
-    .device-selector {
-      display: flex;
-      gap: 1rem;
-      align-items: center;
-      margin-bottom: 1.5rem;
-      padding: 1rem;
-      background: linear-gradient(135deg, #667eea0f 0%, #764ba20f 100%);
-      border-radius: 12px;
-      border: 1px solid var(--border);
-    }
-    .device-selector select {
-      flex: 1;
-      padding: 0.65rem 0.9rem;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: #fff;
-      color: #1a202c;
-      font-size: 0.95rem;
-    }
-    .btn-primary, .btn-success, .btn-danger, .btn-warning {
-      padding: 0.65rem 1.2rem;
-      border: none;
-      border-radius: 10px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .btn-primary {
-      background: var(--primary);
-      color: #fff;
-    }
-    .btn-primary:hover {
-      background: #5568d3;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
-    }
-    .btn-success {
-      background: var(--success);
-      color: #fff;
-    }
-    .btn-success:hover {
-      background: #38a169;
-      transform: translateY(-1px);
-    }
-    .btn-danger {
-      background: var(--danger);
-      color: #fff;
-    }
-    .btn-danger:hover {
-      background: #e53e3e;
-      transform: translateY(-1px);
-    }
-    .btn-warning {
-      background: var(--warning);
-      color: #fff;
-    }
-    .btn-warning:hover {
-      background: #dd6b20;
-      transform: translateY(-1px);
-    }
-    .btn-outline {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: #4a5568;
-      padding: 0.5rem 0.9rem;
-      font-size: 0.9rem;
-    }
-    .btn-outline:hover {
-      background: #edf2f7;
-    }
-    .scan-box {
-      padding: 1.5rem;
-      background: linear-gradient(135deg, #667eea0f 0%, #764ba20f 100%);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 2rem;
-    }
-    #scanStatus {
-      color: #4a5568;
-      font-size: 0.95rem;
-    }
-    .table {
-      border-collapse: collapse;
-      width: 100%;
-      margin-bottom: 0;
-    }
-    .table thead {
-      background: #f7fafc;
-      border-bottom: 2px solid var(--border);
-    }
-    .table th {
-      padding: 1rem;
-      text-align: left;
-      font-weight: 600;
-      color: #4a5568;
-      font-size: 0.9rem;
-    }
-    .table td {
-      padding: 0.9rem 1rem;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.95rem;
-    }
-    .table tbody tr:hover {
-      background: #f7fafc;
-    }
-    .status-badge {
-      display: inline-block;
-      padding: 0.25rem 0.65rem;
-      border-radius: 6px;
-      font-size: 0.85rem;
-      font-weight: 500;
-    }
-    .status-active {
-      background: #c6f6d5;
-      color: #22543d;
-    }
-    .status-inactive {
-      background: #fed7d7;
-      color: #742a2a;
-    }
-    .form-row {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 1rem;
-      margin-bottom: 1rem;
-    }
-    .form-group {
-      display: flex;
-      flex-direction: column;
-    }
-    .form-group label {
-      margin-bottom: 0.5rem;
-      font-weight: 500;
-      color: #2d3748;
-      font-size: 0.95rem;
-    }
-    .form-group input,
-    .form-group select,
-    .form-group textarea {
-      padding: 0.65rem 0.9rem;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 0.95rem;
-      font-family: inherit;
-    }
-    .form-group input:focus,
-    .form-group select:focus,
-    .form-group textarea:focus {
-      outline: none;
-      border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-    }
-    .form-checkbox {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      margin-top: 0.5rem;
-    }
-    .form-checkbox input {
-      width: auto;
-      margin: 0;
-    }
-    .modal {
-      display: none;
-      position: fixed;
-      z-index: 1000;
-      left: 0;
-      top: 0;
-      width: 100%;
-      height: 100%;
-      background-color: rgba(0,0,0,0.5);
-    }
-    .modal.show {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .modal-content {
-      background: #fff;
-      padding: 2rem;
-      border-radius: 14px;
-      width: 90%;
-      max-width: 500px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-    }
-    .modal-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1.5rem;
-    }
-    .modal-title {
-      font-size: 1.25rem;
-      font-weight: 600;
-      color: #1a202c;
-      margin: 0;
-    }
-    .modal-close {
-      background: none;
-      border: none;
-      font-size: 1.5rem;
-      cursor: pointer;
-      color: #718096;
-    }
-    .modal-body {
-      margin-bottom: 1.5rem;
-    }
-    .modal-footer {
-      display: flex;
-      gap: 1rem;
-      justify-content: flex-end;
-    }
-    .alert {
-      padding: 1rem 1.25rem;
-      border-radius: 10px;
-      margin-bottom: 1rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      animation: slideIn 0.3s ease;
-    }
-    @keyframes slideIn {
-      from {
-        opacity: 0;
-        transform: translateY(-10px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-    .alert-success {
-      background: #c6f6d5;
-      color: #22543d;
-      border: 1px solid #9ae6b4;
-    }
-    .alert-danger {
-      background: #fed7d7;
-      color: #742a2a;
-      border: 1px solid #fc8181;
-    }
-    .alert-info {
-      background: #bee3f8;
-      color: #2c5aa0;
-      border: 1px solid #90cdf4;
-    }
-    .alert-close {
-      background: none;
-      border: none;
-      cursor: pointer;
-      font-weight: 600;
-      color: inherit;
-    }
-    .result-card {
-      padding: 1.5rem;
-      background: linear-gradient(135deg, #48bb780f 0%, #38a1690f 100%);
-      border: 2px solid var(--success);
-      border-radius: 12px;
-      margin-top: 1rem;
-      display: none;
-    }
-    .result-card.show {
-      display: block;
-      animation: slideIn 0.3s ease;
-    }
-    .result-title {
-      font-weight: 600;
-      color: #22543d;
-      margin-bottom: 0.75rem;
-    }
-    .result-text {
-      color: #2d3748;
-      margin-bottom: 1rem;
-    }
-    .empty-state {
-      text-align: center;
-      padding: 2rem;
-      color: #718096;
-    }
-  </style>
-</head>
+  <title>NFC管理 - SmartAccess</title>
+        <style>
+
+        /* 左侧导航栏 */
+        .sidebar-header .icon { font-size: 1.8rem; }
+        .sidebar-header .title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            white-space: nowrap;
+            opacity: 1;
+            transition: opacity 0.3s;
+        }
+        .sidebar.collapsed .sidebar-header .title { opacity: 0; width: 0; overflow: hidden; }
+        .sidebar-toggle:hover { background: rgba(255,255,255,0.25); }
+        .nav-link:hover, .nav-link.active {
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+        }
+        .nav-link .icon { font-size: 1.3rem; min-width: 1.3rem; }
+        .nav-link .label {
+            white-space: nowrap;
+            opacity: 1;
+            transition: opacity 0.3s;
+        }
+        .sidebar.collapsed .nav-link .label { opacity: 0; width: 0; overflow: hidden; }
+        /* 主内容区 */
+        .topbar {
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .user-actions { display: flex; gap: 0.75rem; align-items: center; }
+        .user-actions span { color: var(--text-muted); }
+        /* NFC页面特有样式 */
+        .card-box {
+          background: #fff;
+          border-radius: 14px;
+          padding: 2rem;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.06);
+          margin-bottom: 2rem;
+        }
+        .section-title {
+          font-size: 1.1rem;
+          font-weight: 600;
+          color: #1a202c;
+          margin-bottom: 1rem;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+        .section-title::before {
+          content: '';
+          width: 4px;
+          height: 24px;
+          background: var(--primary);
+          border-radius: 2px;
+        }
+        .device-selector {
+          display: flex;
+          gap: 1rem;
+          align-items: center;
+          margin-bottom: 1.5rem;
+          padding: 1rem;
+          background: linear-gradient(135deg, #667eea0f 0%, #764ba20f 100%);
+          border-radius: 12px;
+          border: 1px solid var(--border);
+        }
+        .device-selector select {
+          flex: 1;
+          padding: 0.65rem 0.9rem;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          background: #fff;
+          color: #1a202c;
+          font-size: 0.95rem;
+        }
+        .scan-box {
+          padding: 1.5rem;
+          background: linear-gradient(135deg, #667eea0f 0%, #764ba20f 100%);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+          margin-bottom: 2rem;
+        }
+        #scanStatus {
+          color: #4a5568;
+          font-size: 0.95rem;
+        }
+        .table thead {
+          background: #f7fafc;
+          border-bottom: 2px solid var(--border);
+        }
+        .table th {
+          padding: 1rem;
+          text-align: left;
+          font-weight: 600;
+          color: #4a5568;
+          font-size: 0.9rem;
+        }
+        .table td {
+          padding: 0.9rem 1rem;
+          border-bottom: 1px solid var(--border);
+          font-size: 0.95rem;
+        }
+        .table tbody tr:hover {
+          background: #f7fafc;
+        }
+        .status-badge {
+          display: inline-block;
+          padding: 0.25rem 0.65rem;
+          border-radius: 6px;
+          font-size: 0.85rem;
+          font-weight: 500;
+        }
+        .status-active {
+          background: #c6f6d5;
+          color: #22543d;
+        }
+        .status-inactive {
+          background: #fed7d7;
+          color: #742a2a;
+        }
+        .form-group label {
+          margin-bottom: 0.5rem;
+          font-weight: 500;
+          color: #2d3748;
+          font-size: 0.95rem;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+          padding: 0.65rem 0.9rem;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          font-size: 0.95rem;
+          font-family: inherit;
+        }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+          outline: none;
+          border-color: var(--primary);
+          box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        .form-checkbox input {
+          width: auto;
+          margin: 0;
+        }
+        .alert {
+          padding: 1rem 1.25rem;
+          border-radius: 10px;
+          margin-bottom: 1rem;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn {
+          from {
+            opacity: 0;
+            transform: translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .alert-success {
+          background: #c6f6d5;
+          color: #22543d;
+          border: 1px solid #9ae6b4;
+        }
+        .alert-danger {
+          background: #fed7d7;
+          color: #742a2a;
+          border: 1px solid #fc8181;
+        }
+        .alert-info {
+          background: #bee3f8;
+          color: #2c5aa0;
+          border: 1px solid #90cdf4;
+        }
+        .alert-close {
+          background: none;
+          border: none;
+          cursor: pointer;
+          font-weight: 600;
+          color: inherit;
+        }
+        .result-card {
+          padding: 1.5rem;
+          background: linear-gradient(135deg, #48bb780f 0%, #38a1690f 100%);
+          border: 2px solid var(--success);
+          border-radius: 12px;
+          margin-top: 1rem;
+          display: none;
+        }
+        .result-card.show {
+          display: block;
+          animation: slideIn 0.3s ease;
+        }
+        .result-title {
+          font-weight: 600;
+          color: #22543d;
+          margin-bottom: 0.75rem;
+        }
+        .result-text {
+          color: #2d3748;
+          margin-bottom: 1rem;
+        }
+        .empty-state {
+          text-align: center;
+          padding: 2rem;
+          color: #718096;
+        }
+        </style>
+  <link rel="stylesheet" href="/static/css/common.css">
+  </head>
 <body>
-  <header>
-    <div class="header-content">
-      <button class="back-btn" onclick="window.history.back()">← 返回</button>
-      <div>
-        <h1 class="header-title">🏷️ NFC 卡片管理</h1>
-        <p class="header-subtitle">管理用户的 NFC 卡片、权限和时效</p>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="icon">🔐</span>
+      <span class="title">SmartAccess</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
+    <nav>
+      <ul class="nav-menu">
+        <li class="nav-item">
+          <a href="/web/dashboard" class="nav-link" data-tooltip="仪表盘">
+            <span class="icon">📊</span>
+            <span class="label">仪表盘</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/users" class="nav-link" data-tooltip="用户管理">
+            <span class="icon">👥</span>
+            <span class="label">用户管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/visitors" class="nav-link" data-tooltip="访客管理">
+            <span class="icon">👤</span>
+            <span class="label">访客管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/face" class="nav-link" data-tooltip="人脸识别">
+            <span class="icon">😀</span>
+            <span class="label">人脸识别</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/hardware" class="nav-link" data-tooltip="硬件设备">
+            <span class="icon">🛠️</span>
+            <span class="label">硬件设备</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/nfc" class="nav-link active" data-tooltip="NFC管理">
+            <span class="icon">📶</span>
+            <span class="label">NFC管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/remote-door" class="nav-link" data-tooltip="远程开门">
+            <span class="icon">🚪</span>
+            <span class="label">远程开门</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/logs" class="nav-link" data-tooltip="访问日志">
+            <span class="icon">📜</span>
+            <span class="label">访问日志</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
+            <span class="icon">📖</span>
+            <span class="label">API文档</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div class="main-content">
+    <div class="topbar">
+      <h1>NFC管理</h1>
+      <div class="user-actions">
+        <span id="welcome"></span>
+        <button class="btn btn-ghost" onclick="loadNFCCards()">🔄 刷新</button>
+        <button class="btn btn-primary" onclick="logout()">退出登录</button>
       </div>
     </div>
-  </header>
 
-  <main>
-    <div id="alertArea"></div>
+    <div class="content">
+      <div id="alertArea"></div>
 
-    <!-- 设备选择和扫描区 -->
-    <div class="card-box">
-      <div class="section-title">设备选择与识别</div>
-      <div class="device-selector">
-        <label style="margin: 0; font-weight: 500;">选择设备：</label>
-        <select id="deviceSelect" style="flex: 1;"></select>
-        <button class="btn-outline" id="refreshDevices">🔄 刷新设备</button>
-      </div>
-
-      <div class="scan-box">
-        <button id="btnScan" class="btn-primary">📱 点击识别</button>
-        <span id="scanStatus"></span>
-      </div>
-
-      <div id="resultCard" class="result-card">
-        <div class="result-title">✓ 识别结果</div>
-        <div id="resultText" class="result-text"></div>
-        <button id="closeResult" class="btn-outline" style="padding: 0.5rem 1rem;">关闭</button>
-      </div>
-    </div>
-
-    <!-- 卡片列表 -->
-    <div class="card-box">
-      <div class="section-title">卡片列表</div>
-      <table class="table">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>用户</th>
-            <th>卡号</th>
-            <th>卡名</th>
-            <th>状态</th>
-            <th>权限（截止/每日限）</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody id="cardsTable"></tbody>
-      </table>
-    </div>
-
-    <!-- 新增卡片 -->
-    <div class="card-box">
-      <div class="section-title">新增卡片</div>
-      <form id="createForm">
-        <div class="form-row">
-          <div class="form-group">
-            <label>选择用户 *</label>
-            <select id="userSelect" required>
-              <option value="">-- 选择用户 --</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>卡号 *</label>
-            <input id="cardNumber" type="text" placeholder="例：AA-BB-CC-DD" required>
-          </div>
-          <div class="form-group">
-            <label>卡名</label>
-            <input id="cardName" type="text" placeholder="例：我的卡">
-          </div>
+      <!-- 设备选择和扫描区 -->
+      <div class="card-box">
+        <div class="section-title">设备选择与识别</div>
+        <div class="device-selector">
+          <label style="margin: 0; font-weight: 500;">选择设备：</label>
+          <select id="deviceSelect" style="flex: 1;"></select>
+          <button class="btn-outline" id="refreshDevices">🔄 刷新设备</button>
         </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>权限截止日期</label>
-            <input id="permissionEnd" type="date">
-          </div>
-          <div class="form-group">
-            <label>每日最大使用次数</label>
-            <input id="maxDaily" type="number" placeholder="0 表示无限" min="0" value="0">
-          </div>
-          <div class="form-group" style="justify-content: flex-end; grid-column: auto;">
-            <button type="submit" class="btn-success">➕ 添加卡片</button>
-          </div>
-        </div>
-      </form>
-    </div>
 
-    <div id="message"></div>
-
-    <!-- 编辑卡片 Modal -->
-    <div id="editModal" class="modal">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2 class="modal-title">编辑卡片</h2>
-          <button type="button" class="modal-close" onclick="document.getElementById('editModal').classList.remove('show')">×</button>
+        <div class="scan-box">
+          <button id="btnScan" class="btn-primary">📱 点击识别</button>
+          <span id="scanStatus"></span>
         </div>
-        <div class="modal-body">
-          <form id="editForm">
-            <input type="hidden" id="editCardId">
+
+        <div id="resultCard" class="result-card">
+          <div class="result-title">✓ 识别结果</div>
+          <div id="resultText" class="result-text"></div>
+          <button id="closeResult" class="btn-outline" style="padding: 0.5rem 1rem;">关闭</button>
+        </div>
+      </div>
+
+      <!-- 卡片列表 -->
+      <div class="card-box">
+        <div class="section-title">卡片列表</div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>用户</th>
+              <th>卡号</th>
+              <th>卡名</th>
+              <th>状态</th>
+              <th>权限（截止/每日限）</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="cardsTable"></tbody>
+        </table>
+      </div>
+
+      <!-- 新增卡片 -->
+      <div class="card-box">
+        <div class="section-title">新增卡片</div>
+        <form id="createForm">
+          <div class="form-row">
             <div class="form-group">
-              <label>卡名</label>
-              <input id="editCardName" type="text">
+              <label>选择用户 *</label>
+              <select id="userSelect" required>
+                <option value="">-- 选择用户 --</option>
+              </select>
             </div>
             <div class="form-group">
+              <label>卡号 *</label>
+              <input id="cardNumber" type="text" placeholder="例：AA-BB-CC-DD" required>
+            </div>
+            <div class="form-group">
+              <label>卡名</label>
+              <input id="cardName" type="text" placeholder="例：我的卡">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
               <label>权限截止日期</label>
-              <input id="editPermissionEnd" type="date">
+              <input id="permissionEnd" type="date">
             </div>
             <div class="form-group">
               <label>每日最大使用次数</label>
-              <input id="editMaxDaily" type="number" min="0">
+              <input id="maxDaily" type="number" placeholder="0 表示无限" min="0" value="0">
             </div>
-            <div class="form-group">
-              <label>时间段 (JSON)</label>
-              <textarea id="editTimePeriods" rows="3" placeholder='{"monday":["09:00-17:00"]}'></textarea>
+            <div class="form-group" style="justify-content: flex-end; grid-column: auto;">
+              <button type="submit" class="btn-success">➕ 添加卡片</button>
             </div>
-            <div class="form-checkbox">
-              <input id="editIsActive" type="checkbox">
-              <label for="editIsActive" style="margin: 0;">启用此卡片</label>
-            </div>
-          </form>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn-outline" onclick="document.getElementById('editModal').classList.remove('show')">取消</button>
-          <button type="button" id="saveEdit" class="btn-primary">保存修改</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="message"></div>
+
+      <!-- 编辑卡片 Modal -->
+      <div id="editModal" class="modal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title">编辑卡片</h2>
+            <button type="button" class="modal-close" onclick="document.getElementById('editModal').classList.remove('show')">×</button>
+          </div>
+          <div class="modal-body">
+            <form id="editForm">
+              <input type="hidden" id="editCardId">
+              <div class="form-group">
+                <label>卡名</label>
+                <input id="editCardName" type="text">
+              </div>
+              <div class="form-group">
+                <label>权限截止日期</label>
+                <input id="editPermissionEnd" type="date">
+              </div>
+              <div class="form-group">
+                <label>每日最大使用次数</label>
+                <input id="editMaxDaily" type="number" min="0">
+              </div>
+              <div class="form-group">
+                <label>时间段 (JSON)</label>
+                <textarea id="editTimePeriods" rows="3" placeholder='{"monday":["09:00-17:00"]}'></textarea>
+              </div>
+              <div class="form-checkbox">
+                <input id="editIsActive" type="checkbox">
+                <label for="editIsActive" style="margin: 0;">启用此卡片</label>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn-outline" onclick="document.getElementById('editModal').classList.remove('show')">取消</button>
+            <button type="button" id="saveEdit" class="btn-primary">保存修改</button>
+          </div>
         </div>
       </div>
     </div>
-  </main>
+  </div>
 
   <script src="/static/js/nfc.js"></script>
   <script src="/static/js/bootstrap.bundle.min.js"></script>
-</body>
+
+  
+  <script src="/static/js/common.js"></script>
+  </body>
 </html>

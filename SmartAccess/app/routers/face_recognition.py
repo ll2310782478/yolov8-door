@@ -8,7 +8,7 @@
   4. 获取设备信息
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from pydantic import BaseModel
 import io
 import cv2
@@ -38,6 +38,7 @@ class FaceRecognitionResult(BaseModel):
     similarity: float
     status: str  # 'recognized' | 'unknown' | 'no_features'
     box: tuple
+    access_level: Optional[str] = "door1"
 
 
 class FaceDeviceInfo(BaseModel):
@@ -79,6 +80,7 @@ async def recognize_faces(
 
         # 加载已知的人脸特征
         known_embeddings = {}
+        user_access_map = {}
         face_records = db.query(FaceData).filter(FaceData.is_active == True).all()
 
         for face_record in face_records:
@@ -89,22 +91,59 @@ async def recognize_faces(
                         # 从二进制数据恢复 numpy 数组
                         embedding = np.frombuffer(face_record.embedding_data, dtype=np.float32)
                         known_embeddings[user.username] = embedding
+                        user_access_map[user.username] = face_record.access_level
                     except Exception as e:
                         logger.warning(f"无法加载用户 {user.username} 的人脸特征: {e}")
 
         # 识别人脸
         results = face_service.recognize_face_in_frame(frame, known_embeddings)
 
+        # --- 二维码识别集成 ---
+        try:
+            detector = cv2.QRCodeDetector()
+            data, bbox, _ = detector.detectAndDecode(frame)
+            
+            if data and bbox is not None:
+                from app.services.qrcode_service import verify_qrcode_token
+                # 尝试验证二维码
+                is_valid, verify_result = verify_qrcode_token(data, db, device_id="face_gate")
+                
+                if is_valid:
+                    # 将二维码结果转换为人脸识别结果格式
+                    points = bbox[0]
+                    x_min = int(min(p[0] for p in points))
+                    y_min = int(min(p[1] for p in points))
+                    x_max = int(max(p[0] for p in points))
+                    y_max = int(max(p[1] for p in points))
+                    
+                    qr_result = {
+                        "name": verify_result["visitor_name"],
+                        "similarity": 1.0,
+                        "status": "recognized",
+                        "box": (x_min, y_min, x_max, y_max),
+                        "access_level": verify_result.get("access_level", "door1")
+                    }
+                    results.append(qr_result)
+                    logger.info(f"QR Code recognized: {verify_result['visitor_name']}")
+        except Exception as e:
+            logger.error(f"QR Code detection error: {e}")
+
         # 转换为 API 响应格式
-        return [
-            FaceRecognitionResult(
+        final_results = []
+        for r in results:
+            access_lvl = r.get('access_level')
+            if not access_lvl and r['status'] == 'recognized':
+                access_lvl = user_access_map.get(r['name'], "door1")
+            
+            final_results.append(FaceRecognitionResult(
                 name=r['name'],
                 similarity=r['similarity'],
                 status=r['status'],
-                box=r['box']
-            )
-            for r in results
-        ]
+                box=r['box'],
+                access_level=access_lvl
+            ))
+            
+        return final_results
 
     except Exception as e:
         logger.error(f"❌ 人脸识别失败: {e}")
@@ -114,6 +153,7 @@ async def recognize_faces(
 @router.post("/register/{user_id}")
 async def register_user_face(
     user_id: int,
+    access_level: str = Form("door1"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -122,6 +162,7 @@ async def register_user_face(
 
     参数:
         user_id: 用户 ID
+        access_level: 门禁权限 (door1, door2, all)
         file: 人脸图像文件
 
     返回:
@@ -156,7 +197,8 @@ async def register_user_face(
             image_path=f"faces/{user_id}_{file.filename}",
             is_primary=True,
             is_active=True,
-            embedding_data=embedding.astype(np.float32).tobytes()
+            embedding_data=embedding.astype(np.float32).tobytes(),
+            access_level=access_level
         )
         db.add(face_record)
         db.commit()
@@ -279,6 +321,7 @@ async def compare_two_faces(
 @router.post("/batch-register")
 async def batch_register_faces(
     user_id: int,
+    access_level: str = Form("door1"),
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db)
 ):
@@ -287,6 +330,7 @@ async def batch_register_faces(
 
     参数:
         user_id: 用户 ID
+        access_level: 门禁权限 (door1, door2, all)
         files: 多张人脸图像文件
 
     返回:
@@ -326,7 +370,8 @@ async def batch_register_faces(
                         image_path=f"faces/{user_id}_{file.filename}",
                         is_primary=idx == 0,  # 第一张设为主人脸
                         is_active=True,
-                        embedding_data=embedding.astype(np.float32).tobytes()
+                        embedding_data=embedding.astype(np.float32).tobytes(),
+                        access_level=access_level
                     )
                     db.add(face_record)
 

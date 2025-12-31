@@ -42,6 +42,7 @@ class FaceData(Base):
     embedding_data = Column(LargeBinary)  # 人脸特征向量（InsightFace）
     is_primary = Column(Boolean, default=False)  # 是否为主要人脸
     is_active = Column(Boolean, default=True)  # 是否启用
+    access_level = Column(String(50), default="door1")  # 允许通行的门：door1, door2, all
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -143,6 +144,7 @@ class Visitor(Base):
     check_out_time = Column(DateTime)
     is_checked_out = Column(Boolean, default=False, index=True)
     qr_code_path = Column(String(255))
+    qr_code_image = Column(LargeBinary)  # 存储二维码图片二进制数据
     qr_code_expires_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     
@@ -152,6 +154,28 @@ class Visitor(Base):
     
     # 关系
     visitor_permissions = relationship("VisitorPermission", back_populates="visitor", cascade="all, delete-orphan")
+
+    @property
+    def current_permission(self):
+        if self.visitor_permissions:
+            # Return the latest permission (assuming higher ID is later)
+            return sorted(self.visitor_permissions, key=lambda x: x.id, reverse=True)[0]
+        return None
+
+    @property
+    def access_level(self):
+        perm = self.current_permission
+        return perm.access_level if perm else "door1"
+
+    @property
+    def max_uses(self):
+        perm = self.current_permission
+        return perm.max_uses if perm else 1
+
+    @property
+    def accessed_count(self):
+        perm = self.current_permission
+        return perm.accessed_count if perm else 0
 
 
 class VisitorPermission(Base):
@@ -165,9 +189,12 @@ class VisitorPermission(Base):
     permission_type = Column(String(20))  # qrcode, temp_pass
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    start_time = Column(DateTime, default=datetime.utcnow) # 生效开始时间
     expires_at = Column(DateTime, nullable=False)  # 权限过期时间
+    max_uses = Column(Integer, default=1) # 最大使用次数
     accessed_count = Column(Integer, default=0)  # 使用次数
     last_access_time = Column(DateTime)  # 最后访问时间
+    access_level = Column(String(50), default="door1")  # 允许通行的门：door1, door2, all
     
     # 通知信息
     email_sent = Column(Boolean, default=False)
@@ -177,6 +204,17 @@ class VisitorPermission(Base):
     
     # 关系
     visitor = relationship("Visitor", back_populates="visitor_permissions")
+
+
+class SystemConfig(Base):
+    """系统配置模型"""
+    __tablename__ = "system_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(50), unique=True, index=True, nullable=False)
+    value = Column(Text)
+    description = Column(String(255))
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Role(Base):

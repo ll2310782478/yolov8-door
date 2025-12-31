@@ -1,150 +1,450 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SmartAccess 控制台</title>
-    <style>
-        :root {
-            --primary: #667eea;
-            --bg: #f7fafc;
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            background: var(--bg);
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            color: #1a202c;
-        }
-        header {
-            background: #fff;
-            padding: 1rem 2rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        }
-        .logo { font-weight: 700; font-size: 1.2rem; color: var(--primary); }
-        .actions { display: flex; gap: 0.75rem; align-items: center; }
-        .btn {
-            padding: 0.65rem 1rem;
-            border-radius: 10px;
-            border: none;
-            background: var(--primary);
-            color: #fff;
-            cursor: pointer;
-        }
-        .ghost-btn {
-            background: #edf2f7;
-            color: #1a202c;
-            border: none;
-            padding: 0.65rem 1rem;
-            border-radius: 10px;
-            cursor: pointer;
-        }
-        main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
-        .card {
-            background: #fff;
-            border-radius: 14px;
-            padding: 2rem;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.06);
-        }
-        h1 { margin-top: 0; }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 1rem;
-            margin-top: 1.5rem;
-        }
-        .tile {
-            padding: 1.25rem;
-            border-radius: 12px;
-            background: linear-gradient(135deg, #667eea0f 0%, #764ba20f 100%);
-            border: 1px solid #e2e8f0;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-        .tile h3 { margin: 0; }
-        .tile p { margin: 0; color: #4a5568; }
-        .tile a {
-            margin-top: auto;
-            text-decoration: none;
-            background: var(--primary);
-            color: #fff;
-            padding: 0.65rem 0.9rem;
-            border-radius: 10px;
-            text-align: center;
-        }
-        .muted { color: #4a5568; }
-    </style>
-</head>
-<body>
-    <header>
-        <div class="logo">🔐 SmartAccess 控制台</div>
-        <div class="actions">
-            <span id="welcome" class="muted"></span>
-            <button class="ghost-btn" onclick="goHome()">首页</button>
-            <button class="btn" onclick="logout()">退出登录</button>
-        </div>
-    </header>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartAccess 数据仪表盘</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/static/js/common.js"></script>
+      <style>
 
-    <main>
-        <div class="card">
-            <h1>选择要管理的功能</h1>
-            <p class="muted">通过按钮进入对应的管理界面，所有界面均基于现有 API 构建。</p>
-            <div class="grid">
-                <div class="tile">
-                    <h3>👥 用户管理</h3>
-                    <p>添加/删除用户，更新基本信息。</p>
-                    <a href="/web/users">进入用户管理</a>
-                </div>
-                <div class="tile">
-                    <h3>👤 访客管理</h3>
-                    <p>登记访客、生成二维码、办理离场。</p>
-                    <a href="/web/visitors">进入访客管理</a>
-                </div>
-                <div class="tile">
-                    <h3>😀 人脸识别管理</h3>
-                    <p>摄像头取流、录入人脸、识别并联动开门。</p>
-                    <a href="/web/face">进入人脸管理</a>
-                </div>
-                <div class="tile">
-                    <h3>🛠️ 硬件设备</h3>
-                    <p>注册门锁/读头设备，查看状态。</p>
-                    <a href="/web/hardware">设备管理</a>
-                </div>
-                <div class="tile">
-                    <h3>📜 访问日志</h3>
-                    <p>查看近日志，支持类型/状态筛选。</p>
-                    <a href="/web/logs">查看日志</a>
-                </div>
-                <div class="tile">
-                    <h3>📖 API 文档</h3>
-                    <p>需要自动化或二开时查看。</p>
-                    <a href="/docs">打开 Swagger</a>
-                </div>
-            </div>
+    /* 左侧导航栏 */
+    .sidebar-header .icon { font-size: 1.8rem; }
+    .sidebar-header .title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      white-space: nowrap;
+      opacity: 1;
+      transition: opacity 0.3s;
+    }
+    .sidebar.collapsed .sidebar-header .title { opacity: 0; width: 0; overflow: hidden; }
+    .sidebar-toggle:hover { background: rgba(255,255,255,0.25); }
+    .nav-link:hover, .nav-link.active {
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+    }
+    .nav-link .icon { font-size: 1.3rem; min-width: 1.3rem; }
+    .nav-link .label {
+      white-space: nowrap;
+      opacity: 1;
+      transition: opacity 0.3s;
+    }
+    .sidebar.collapsed .nav-link .label { opacity: 0; width: 0; overflow: hidden; }
+    /* 主内容区 */
+    .topbar {
+      background: #fff;
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .user-actions { display: flex; gap: 0.75rem; align-items: center; }
+    .user-actions span { color: var(--text-muted); }
+    /* 统计卡片 */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .stat-card {
+      background: #fff;
+      padding: 1.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+      display: flex;
+      gap: 1rem;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .stat-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+    }
+    .stat-icon {
+      width: 60px;
+      height: 60px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.8rem;
+      flex-shrink: 0;
+    }
+    .stat-icon.primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .stat-icon.success { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
+    .stat-icon.warning { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
+    .stat-icon.danger { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
+    .stat-info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .stat-label {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+    .stat-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .stat-change {
+      font-size: 0.85rem;
+      margin-top: 0.25rem;
+    }
+    .stat-change.up { color: var(--success); }
+    .stat-change.down { color: var(--danger); }
+    /* 图表容器 */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    .chart-card {
+      background: #fff;
+      padding: 1.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+    }
+    .chart-card h3 {
+      margin: 0 0 1rem 0;
+      color: var(--text);
+      font-size: 1.1rem;
+    }
+    .chart-container {
+      position: relative;
+      height: 300px;
+    }
+    /* 全宽图表 */
+    .chart-full {
+      grid-column: 1 / -1;
+    }
+    /* 响应式 */
+      .charts-grid { grid-template-columns: 1fr; }
+    }
+      </style>
+  <link rel="stylesheet" href="/static/css/common.css">
+  </head>
+<body>
+  <!-- 左侧导航栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="icon">🔐</span>
+      <span class="title">SmartAccess</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
+    <nav>
+      <ul class="nav-menu">
+        <li class="nav-item">
+          <a href="/web/dashboard" class="nav-link active" data-tooltip="仪表盘">
+            <span class="icon">📊</span>
+            <span class="label">仪表盘</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/users" class="nav-link" data-tooltip="用户管理">
+            <span class="icon">👥</span>
+            <span class="label">用户管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/visitors" class="nav-link" data-tooltip="访客管理">
+            <span class="icon">👤</span>
+            <span class="label">访客管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/face" class="nav-link" data-tooltip="人脸识别">
+            <span class="icon">😀</span>
+            <span class="label">人脸识别</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/hardware" class="nav-link" data-tooltip="硬件设备">
+            <span class="icon">🛠️</span>
+            <span class="label">硬件设备</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/nfc" class="nav-link" data-tooltip="NFC管理">
+            <span class="icon">📶</span>
+            <span class="label">NFC管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/remote-door" class="nav-link" data-tooltip="远程开门">
+            <span class="icon">🚪</span>
+            <span class="label">远程开门</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/logs" class="nav-link" data-tooltip="访问日志">
+            <span class="icon">📜</span>
+            <span class="label">访问日志</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
+            <span class="icon">📖</span>
+            <span class="label">API文档</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <!-- 主内容区 -->
+  <div class="main-content">
+    <div class="topbar">
+      <h1>数据仪表盘</h1>
+      <div class="user-actions">
+        <span id="welcome"></span>
+        <button class="btn btn-ghost" onclick="refreshData()">🔄 刷新</button>
+        <button class="btn btn-primary" onclick="logout()">退出登录</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- 统计卡片 -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon primary">👥</div>
+          <div class="stat-info">
+            <div class="stat-label">总用户数</div>
+            <div class="stat-value" id="stat-users">-</div>
+            <div class="stat-change up" id="stat-users-change">+0 本周</div>
+          </div>
         </div>
-    </main>
+        <div class="stat-card">
+          <div class="stat-icon success">✅</div>
+          <div class="stat-info">
+            <div class="stat-label">访问成功率</div>
+            <div class="stat-value" id="stat-success">-</div>
+            <div class="stat-change" id="stat-success-change">近7天</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon warning">🛠️</div>
+          <div class="stat-info">
+            <div class="stat-label">在线设备</div>
+            <div class="stat-value" id="stat-devices">-</div>
+            <div class="stat-change" id="stat-devices-change">实时状态</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon danger">📊</div>
+          <div class="stat-info">
+            <div class="stat-label">今日访问</div>
+            <div class="stat-value" id="stat-today">-</div>
+            <div class="stat-change" id="stat-today-change">+0 vs 昨日</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 图表区域 -->
+      <div class="charts-grid">
+        <div class="chart-card">
+          <h3>📈 访问趋势（近7天）</h3>
+          <div class="chart-container">
+            <canvas id="accessTrendChart"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>🥧 访问类型分布</h3>
+          <div class="chart-container">
+            <canvas id="accessTypeChart"></canvas>
+          </div>
+        </div>
+        <div class="chart-card chart-full">
+          <h3>📊 24小时访问热力图</h3>
+          <div class="chart-container">
+            <canvas id="hourlyActivityChart"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>📉 访问状态统计</h3>
+          <div class="chart-container">
+            <canvas id="accessStatusChart"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>🔝 TOP设备访问量</h3>
+          <div class="chart-container">
+            <canvas id="topDevicesChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
     <script>
-        const token = localStorage.getItem('smartaccess_token');
-        const username = localStorage.getItem('smartaccess_username');
-        if (!token) {
-            window.location.href = '/web/auth';
-        } else {
-            document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录';
-        }
-        function logout() {
-            localStorage.removeItem('smartaccess_token');
-            localStorage.removeItem('smartaccess_username');
-            window.location.href = '/web/auth';
-        }
-        function goHome() {
-            window.location.href = '/';
-        }
-    </script>
-</body>
-</html>
 
+    const token = localStorage.getItem('smartaccess_token');
+    const username = localStorage.getItem('smartaccess_username');
+    if (!token) { window.location.href = '/web/auth'; }
+    else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
+    
+    // 图表实例
+    let charts = {};
+    // 初始化图表
+    function initCharts() {
+      // 访问趋势折线图
+      charts.accessTrend = new Chart(document.getElementById('accessTrendChart'), {
+        type: 'line',
+        data: {
+          labels: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
+          datasets: [{
+            label: '成功',
+            data: [0, 0, 0, 0, 0, 0, 0],
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+            tension: 0.4
+          }, {
+            label: '失败',
+            data: [0, 0, 0, 0, 0, 0, 0],
+            borderColor: '#ef4444',
+            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+            tension: 0.4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'top' } }
+        }
+      });
+      // 访问类型饼图
+      charts.accessType = new Chart(document.getElementById('accessTypeChart'), {
+        type: 'doughnut',
+        data: {
+          labels: ['NFC', '人脸', '蓝牙', '远程'],
+          datasets: [{
+            data: [0, 0, 0, 0],
+            backgroundColor: ['#667eea', '#10b981', '#f59e0b', '#ef4444']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'right' } }
+        }
+      });
+      // 24小时热力柱状图
+      charts.hourlyActivity = new Chart(document.getElementById('hourlyActivityChart'), {
+        type: 'bar',
+        data: {
+          labels: Array.from({length: 24}, (_, i) => `${i}:00`),
+          datasets: [{
+            label: '访问次数',
+            data: new Array(24).fill(0),
+            backgroundColor: '#667eea'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } }
+        }
+      });
+      // 访问状态柱状图
+      charts.accessStatus = new Chart(document.getElementById('accessStatusChart'), {
+        type: 'bar',
+        data: {
+          labels: ['成功', '失败', '拒绝'],
+          datasets: [{
+            label: '次数',
+            data: [0, 0, 0],
+            backgroundColor: ['#10b981', '#ef4444', '#f59e0b']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } }
+        }
+      });
+      // TOP设备横向柱状图
+      charts.topDevices = new Chart(document.getElementById('topDevicesChart'), {
+        type: 'bar',
+        data: {
+          labels: ['设备1', '设备2', '设备3', '设备4', '设备5'],
+          datasets: [{
+            label: '访问次数',
+            data: [0, 0, 0, 0, 0],
+            backgroundColor: '#764ba2'
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } }
+        }
+      });
+    }
+    // 加载数据
+    async function loadData() {
+      try {
+        // 获取统计数据
+        const statsRes = await fetch('/api/hardware/logs/statistics?days=7', { headers: authHeaders() });
+        const stats = await statsRes.json();
+        // 更新统计卡片
+        if (stats.total_accesses !== undefined) {
+          document.getElementById('stat-today').textContent = stats.total_accesses;
+          document.getElementById('stat-success').textContent = stats.success_rate || '0%';
+          // 更新访问状态图表
+          charts.accessStatus.data.datasets[0].data = [
+            stats.success_accesses || 0,
+            stats.failed_accesses || 0,
+            stats.denied_accesses || 0
+          ];
+          charts.accessStatus.update();
+          // 更新访问类型图表
+          if (stats.access_by_type) {
+            const types = Object.keys(stats.access_by_type);
+            const values = Object.values(stats.access_by_type);
+            charts.accessType.data.labels = types;
+            charts.accessType.data.datasets[0].data = values;
+            charts.accessType.update();
+          }
+        }
+        // 获取设备列表
+        const devicesRes = await fetch('/api/hardware/devices', { headers: authHeaders() });
+        const devices = await devicesRes.json();
+        const onlineCount = devices.filter(d => d.connection_status === 'online').length;
+        document.getElementById('stat-devices').textContent = `${onlineCount}/${devices.length}`;
+        document.getElementById('stat-devices-change').textContent = `共${devices.length}台设备`;
+        // 模拟7天趋势数据（实际应从后端获取）
+        const successData = [45, 52, 48, 61, 55, 67, 58];
+        const failData = [5, 3, 7, 4, 6, 2, 4];
+        charts.accessTrend.data.datasets[0].data = successData;
+        charts.accessTrend.data.datasets[1].data = failData;
+        charts.accessTrend.update();
+        // 模拟24小时数据
+        const hourlyData = Array.from({length: 24}, () => Math.floor(Math.random() * 30));
+        charts.hourlyActivity.data.datasets[0].data = hourlyData;
+        charts.hourlyActivity.update();
+        // 模拟TOP设备数据
+        const topDeviceNames = devices.slice(0, 5).map(d => d.device_name || d.device_id);
+        const topDeviceData = Array.from({length: 5}, () => Math.floor(Math.random() * 100));
+        charts.topDevices.data.labels = topDeviceNames.length ? topDeviceNames : ['暂无设备'];
+        charts.topDevices.data.datasets[0].data = topDeviceData;
+        charts.topDevices.update();
+      } catch (e) {
+        console.error('加载数据失败', e);
+      }
+    }
+    function refreshData() {
+      loadData();
+    }
+    // 初始化
+    initCharts();
+    loadData();
+    setInterval(loadData, 60000); // 每分钟刷新
+    </script>
+  </body>
+</html>

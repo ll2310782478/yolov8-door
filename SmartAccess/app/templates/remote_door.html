@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>远程开门 - SmartAccess</title>
+  <style>
+    /* 左侧导航栏 */
+    .sidebar-header .icon { font-size: 1.8rem; }
+    .sidebar-header .title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      white-space: nowrap;
+      opacity: 1;
+      transition: opacity 0.3s;
+    }
+    .sidebar.collapsed .sidebar-header .title { opacity: 0; width: 0; overflow: hidden; }
+    .sidebar-toggle:hover { background: rgba(255,255,255,0.25); }
+    .nav-link:hover, .nav-link.active {
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+    }
+    .nav-link .icon { font-size: 1.3rem; min-width: 1.3rem; }
+    .nav-link .label {
+      white-space: nowrap;
+      opacity: 1;
+      transition: opacity 0.3s;
+    }
+    .sidebar.collapsed .nav-link .label { opacity: 0; width: 0; overflow: hidden; }
+    
+    /* 主内容区 */
+    .topbar {
+      background: #fff;
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .user-actions { display: flex; gap: 0.75rem; align-items: center; }
+    .user-actions span { color: var(--text-muted); }
+    
+    /* 远程开门页面特有样式 */
+    .device-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: 1.5rem;
+    }
+    .device-card {
+      background: white;
+      border-radius: 12px;
+      padding: 1.5rem;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .device-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+    }
+    .device-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .device-name {
+      font-size: 1.3rem;
+      font-weight: bold;
+      color: #333;
+    }
+    .status-badge {
+      padding: 0.3rem 0.8rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: bold;
+    }
+    .status-online {
+      background: #4CAF50;
+      color: white;
+    }
+    .status-offline {
+      background: #f44336;
+      color: white;
+    }
+    .device-info {
+      color: #666;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .device-info span {
+      font-weight: bold;
+      color: #333;
+    }
+    .door-buttons {
+      display: flex;
+      gap: 10px;
+      margin-top: 1.5rem;
+    }
+    .door-btn {
+      flex: 1;
+      padding: 1rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+      transition: all 0.3s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .door-btn-1 {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .door-btn-1:hover {
+      transform: scale(1.05);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    .door-btn-2 {
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+      color: white;
+    }
+    .door-btn-2:hover {
+      transform: scale(1.05);
+      box-shadow: 0 4px 12px rgba(245, 87, 108, 0.4);
+    }
+    .door-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+    .no-devices {
+      text-align: center;
+      padding: 3rem;
+      color: #666;
+      font-size: 1.2rem;
+    }
+    .loading {
+      text-align: center;
+      padding: 2rem;
+      font-size: 1.1rem;
+      color: #666;
+    }
+    .toast {
+      position: fixed;
+      top: 80px;
+      right: 20px;
+      padding: 1rem 1.5rem;
+      border-radius: 8px;
+      color: white;
+      font-weight: bold;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 1000;
+      animation: slideIn 0.3s ease-out;
+    }
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+    .toast-success {
+      background: #4CAF50;
+    }
+    .toast-error {
+      background: #f44336;
+    }
+    .last-heartbeat {
+      font-size: 0.85rem;
+      color: #888;
+      margin-top: 0.5rem;
+    }
+  </style>
+  <link rel="stylesheet" href="/static/css/common.css">
+  </head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="icon">🔐</span>
+      <span class="title">SmartAccess</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
+    <nav>
+      <ul class="nav-menu">
+        <li class="nav-item">
+          <a href="/web/dashboard" class="nav-link">
+            <span class="icon">📊</span>
+            <span class="label">仪表盘</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/users" class="nav-link">
+            <span class="icon">👥</span>
+            <span class="label">用户管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/visitors" class="nav-link">
+            <span class="icon">👤</span>
+            <span class="label">访客管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/face" class="nav-link">
+            <span class="icon">😀</span>
+            <span class="label">人脸识别</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/hardware" class="nav-link">
+            <span class="icon">🛠️</span>
+            <span class="label">硬件设备</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/nfc" class="nav-link">
+            <span class="icon">📶</span>
+            <span class="label">NFC管理</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/remote-door" class="nav-link active">
+            <span class="icon">🚪</span>
+            <span class="label">远程开门</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/logs" class="nav-link">
+            <span class="icon">📜</span>
+            <span class="label">访问日志</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/docs" class="nav-link" target="_blank">
+            <span class="icon">📖</span>
+            <span class="label">API文档</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div class="main-content">
+    <div class="topbar">
+      <h1>远程开门</h1>
+      <div class="user-actions">
+        <span id="welcome"></span>
+        <button class="btn btn-ghost" onclick="loadDevices()">🔄 刷新</button>
+        <button class="btn btn-primary" onclick="logout()">退出登录</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div id="loading" class="loading">
+        ⏳ 正在加载设备列表...
+      </div>
+
+      <div id="deviceGrid" class="device-grid" style="display: none;">
+        <!-- 设备卡片将通过JS动态生成 -->
+      </div>
+
+      <div id="noDevices" class="no-devices" style="display: none;">
+        📭 暂无已注册的门禁设备
+        <br><br>
+        <a href="/web/hardware" style="color: #667eea; text-decoration: none;">前往硬件管理页面注册设备 →</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+
+    // 加载设备列表
+    async function loadDevices() {
+        try {
+            const response = await fetch('/api/hardware/devices');
+            const data = await response.json();
+            
+            if (!Array.isArray(data)) {
+                console.error('API返回数据格式错误:', data);
+                throw new Error('API返回数据格式错误');
+            }
+
+            document.getElementById('loading').style.display = 'none';
+            
+            if (data.length === 0) {
+                document.getElementById('noDevices').style.display = 'block';
+                return;
+            }
+            
+            // 筛选门禁相关设备
+            const doorDevices = data.filter(d => 
+                d.device_type === 'nfc_reader' || 
+                d.device_type === 'door_lock' ||
+                d.device_type === 'door_controller' ||
+                d.device_type === 'esp8266'
+            );
+            if (doorDevices.length === 0) {
+                document.getElementById('noDevices').style.display = 'block';
+                return;
+            }
+            const grid = document.getElementById('deviceGrid');
+            grid.style.display = 'grid';
+            grid.innerHTML = '';
+            doorDevices.forEach(device => {
+                const card = createDeviceCard(device);
+                grid.appendChild(card);
+            });
+        } catch (error) {
+            console.error('加载设备失败:', error);
+            showToast('加载设备失败', 'error');
+            document.getElementById('loading').innerHTML = '❌ 加载失败，请刷新重试';
+        }
+    }
+    // UTC -> 本地（东八区）解析
+    function parseUtcPlus8(dateStr) {
+        if (!dateStr) return null;
+        const utc = new Date(dateStr.endsWith('Z') ? dateStr : `${dateStr}Z`);
+        if (isNaN(utc.getTime())) return null;
+        const display = new Date(utc.getTime() + 8 * 3600 * 1000);
+        return { utc, display };
+    }
+    // 创建设备卡片
+    function createDeviceCard(device) {
+        const card = document.createElement('div');
+        card.className = 'device-card';
+        const parsed = parseUtcPlus8(device.last_heartbeat);
+        const heartbeatAgeSec = parsed ? Math.floor((Date.now() - parsed.utc.getTime()) / 1000) : null;
+        const isOnline = device.connection_status === 'online' && heartbeatAgeSec !== null && heartbeatAgeSec < 90;
+        const lastHeartbeat = parsed ? `${parsed.display.toLocaleString('zh-CN')} (${heartbeatAgeSec}s前)` : '从未';
+        card.innerHTML = `
+            <div class="device-header">
+                <div class="device-name">${device.device_name}</div>
+                <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
+                    ${isOnline ? '● 在线' : '○ 离线'}${device.connection_status ? ' | ' + device.connection_status : ''}
+                </span>
+            </div>
+            <div class="device-info">设备ID: <span>${device.device_id}</span></div>
+            <div class="device-info">类型: <span>${getDeviceTypeName(device.device_type)}</span></div>
+            <div class="device-info">位置: <span>${device.location || '未设置'}</span></div>
+            <div class="last-heartbeat">最后心跳: ${lastHeartbeat}</div>
+            <div class="door-buttons">
+                <button class="door-btn door-btn-1" 
+                        onclick="openDoor('${device.device_id}', 1)"
+                        ${!device.is_active ? 'disabled' : ''}>
+                    🚪 开启门1
+                </button>
+                <button class="door-btn door-btn-2" 
+                        onclick="openDoor('${device.device_id}', 2)"
+                        ${!device.is_active ? 'disabled' : ''}>
+                    🚪 开启门2
+                </button>
+            </div>
+        `;
+        return card;
+    }
+    // 获取设备类型名称
+    function getDeviceTypeName(type) {
+        const types = {
+            'nfc_reader': 'NFC读卡器',
+            'door_lock': '门锁控制器',
+            'door_controller': '门禁控制器',
+            'camera': '摄像头'
+        };
+        return types[type] || type;
+    }
+    // 远程开门
+    async function openDoor(deviceId, doorId) {
+        try {
+            const response = await fetch('/api/hardware/remote-door/open', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    device_id: deviceId,
+                    door_id: doorId,
+                    source: 'remote'
+                })
+            });
+            const data = await response.json();
+            if (response.ok && data.success) {
+                showToast(`✅ ${data.message}`, 'success');
+            } else {
+                showToast(`❌ ${data.detail || '开门失败'}`, 'error');
+            }
+        } catch (error) {
+            console.error('开门请求失败:', error);
+            showToast('❌ 网络错误，请重试', 'error');
+        }
+    }
+    // 显示提示消息
+    function showToast(message, type) {
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => {
+            toast.remove();
+        }, 3000);
+    }
+    // 页面加载时获取设备列表
+    loadDevices();
+    // 每30秒自动刷新设备状态
+    setInterval(loadDevices, 30000);
+    </script>
+  <script src="/static/js/common.js"></script>
+  </body>
+</html>

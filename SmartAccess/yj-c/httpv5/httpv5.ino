@@ -26,7 +26,7 @@
 
 const char* SSID        = "lll";           // WiFi名称
 const char* PASSWORD    = "12345678";      // WiFi密码
-const char* SERVER_HOST = "192.168.188.116"; // 服务器IP
+const char* SERVER_HOST = "192.168.188.116"; // 电脑IP
 const int   SERVER_PORT = 8000;            // 端口
 
 // 设备身份信息

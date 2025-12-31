@@ -1,6 +1,6 @@
 """硬件接口路由 - 增强版 (NFC/蓝牙/日志)"""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask
@@ -34,6 +34,12 @@ class HardwareDeviceUpdate(BaseModel):
     is_active: Optional[bool] = None
     ip_address: Optional[str] = None
     port: Optional[int] = None
+
+
+class HardwareHeartbeat(BaseModel):
+    connection_status: str = "online"
+    ip_address: Optional[str] = None
+    firmware_version: Optional[str] = None
 
 
 class HardwareDeviceResponse(BaseModel):
@@ -210,7 +216,11 @@ def update_device(device_id: str, device_update: HardwareDeviceUpdate, db: Sessi
 
 
 @router.post("/devices/{device_id}/heartbeat")
-def device_heartbeat(device_id: str, connection_status: str = "online", db: Session = Depends(get_db)):
+def device_heartbeat(
+    device_id: str,
+    heartbeat: HardwareHeartbeat = Body(default=None),
+    db: Session = Depends(get_db)
+):
     """设备心跳检测"""
     db_device = db.query(HardwareDevice).filter(
         HardwareDevice.device_id == device_id
@@ -219,11 +229,21 @@ def device_heartbeat(device_id: str, connection_status: str = "online", db: Sess
     if not db_device:
         raise HTTPException(status_code=404, detail="设备不存在")
     
+    payload = heartbeat or HardwareHeartbeat()
     db_device.last_heartbeat = datetime.utcnow()
     db_device.is_active = True
-    db_device.connection_status = connection_status
+    db_device.connection_status = payload.connection_status or "online"
+    if payload.ip_address:
+        db_device.ip_address = payload.ip_address
+    if payload.firmware_version:
+        db_device.firmware_version = payload.firmware_version
     db.commit()
-    return {"status": "ok", "device_id": device_id, "timestamp": datetime.utcnow()}
+    return {
+        "status": "ok",
+        "device_id": device_id,
+        "connection_status": db_device.connection_status,
+        "timestamp": datetime.utcnow(),
+    }
 
 
 @router.delete("/devices/{device_id}")
@@ -539,19 +559,88 @@ def create_nfc_command(task_in: NFCTaskCreate, db: Session = Depends(get_db)):
     return task
 
 
+class PollRequest(BaseModel):
+    """轮询请求模型"""
+    device_id: str
+
+
+class RemoteDoorRequest(BaseModel):
+    """远程开门请求"""
+    device_id: str
+    door_id: int  # 1 或 2
+    source: str = "remote"  # 触发来源
+
+
+@router.post("/remote-door/open")
+def remote_open_door(request: RemoteDoorRequest, db: Session = Depends(get_db)):
+    """
+    远程开门接口 - Web端调用
+    创建一个OPEN指令任务，设备轮询时会执行
+    """
+    # 检查设备是否存在
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == request.device_id
+    ).first()
+    
+    if not device:
+        raise HTTPException(status_code=404, detail="设备不存在")
+    
+    if not device.is_active:
+        raise HTTPException(status_code=400, detail="设备未激活")
+    
+    # 创建开门任务
+    door_str = f"door{request.door_id}"
+    task = NFCTask(
+        device_id=request.device_id,
+        command="OPEN",
+        payload=f'{{"door": "{door_str}", "source": "{request.source}"}}',
+        status="pending"
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    
+    return {
+        "success": True,
+        "message": f"开门指令已下发到设备 {request.device_id}",
+        "task_id": task.id,
+        "door": door_str
+    }
+
+
+@router.post("/nfc/command/poll")
 @router.get("/nfc/command/poll")
-def poll_nfc_command(device_id: str, db: Session = Depends(get_db)):
-    """设备轮询此接口以获取待执行命令。返回最近一个 pending 的命令并标记为 sent。"""
+def poll_nfc_command(
+    device_id: Optional[str] = Query(None), 
+    request_body: Optional[PollRequest] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    设备轮询此接口以获取待执行命令
+    支持 GET 和 POST 两种方法
+    - GET: ?device_id=xxx
+    - POST: {"device_id": "xxx"}
+    """
+    # 从GET参数或POST body获取device_id
+    dev_id = device_id if device_id else (request_body.device_id if request_body else None)
+    
+    if not dev_id:
+        return {"has_command": False, "message": "未提供device_id"}
+    
+    # 查询待执行的命令
     task = db.query(NFCTask).filter(
-        NFCTask.device_id == device_id,
+        NFCTask.device_id == dev_id,
         NFCTask.status == "pending"
     ).order_by(NFCTask.created_at.asc()).first()
+    
     if not task:
         return {"has_command": False}
 
+    # 标记为已发送
     task.status = "sent"
     task.sent_at = datetime.utcnow()
     db.commit()
+    
     return {
         "has_command": True,
         "task_id": task.id,
@@ -811,4 +900,236 @@ def get_access_statistics(
         "denied_accesses": denied_accesses,
         "success_rate": f"{(success_accesses / total_accesses * 100) if total_accesses > 0 else 0:.2f}%",
         "access_by_type": {item[0]: item[1] for item in access_types}
+    }
+
+
+# ==================== 统一远程开门接口 ====================
+
+class RemoteUnlockRequest(BaseModel):
+    """远程开门请求"""
+    device_id: str  # 设备ID，例如 "nfc_reader_01"
+    door_id: str = "door1"  # 门编号：door1 或 door2
+    user_id: Optional[int] = None  # 触发开门的用户ID（用于记录日志）
+    reason: Optional[str] = "remote_unlock"  # 开门原因
+
+
+@router.post("/remote-unlock")
+def remote_unlock_door(
+    request: RemoteUnlockRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    统一远程开门接口
+    
+    功能：
+    - 向指定硬件设备发送开门命令
+    - 支持人脸识别、蓝牙、管理员等多种方式调用
+    - 记录开门日志
+    
+    参数：
+    - device_id: 硬件设备ID
+    - door_id: 门编号 (door1/door2)
+    - user_id: 用户ID（可选，用于日志记录）
+    - reason: 开门原因（可选，用于日志记录）
+    """
+    
+    # 检查设备是否存在
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == request.device_id
+    ).first()
+    
+    if not device:
+        raise HTTPException(status_code=404, detail=f"设备 {request.device_id} 不存在")
+    
+    if not device.is_active:
+        raise HTTPException(status_code=400, detail=f"设备 {request.device_id} 未激活")
+    
+    try:
+        # 创建开门任务
+        task = NFCTask(
+            device_id=request.device_id,
+            command="OPEN",
+            payload=f'{{"door_id": "{request.door_id}"}}',
+            status="pending",
+            created_at=datetime.utcnow()
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id  # 立即保存ID，防止后续session失效
+        
+        # 记录访问日志
+        if request.user_id:
+            try:
+                user = db.query(User).filter(User.id == request.user_id).first()
+                if user:
+                    # 截断 access_type 以适应数据库字段 (String(20))
+                    access_type = request.reason[:20] if request.reason else "remote_unlock"
+                    
+                    log = AccessLog(
+                        user_id=request.user_id,
+                        access_type=access_type,
+                        status="success",
+                        timestamp=datetime.utcnow(),
+                        device_id=request.device_id,
+                        details=f"远程开门: {request.door_id}, 原因: {request.reason}"
+                    )
+                    db.add(log)
+                    db.commit()
+            except Exception as log_error:
+                print(f"Log recording failed: {str(log_error)}")
+                # 日志记录失败不影响开门任务
+        
+        return {
+            "status": "success",
+            "message": f"开门命令已发送到设备 {request.device_id}",
+            "task_id": task_id,
+            "device_id": request.device_id,
+            "door_id": request.door_id,
+            "timestamp": datetime.utcnow()
+        }
+    except Exception as e:
+        print(f"Remote unlock error: {str(e)}")
+        # 如果任务已创建但后续失败，仍返回成功但带有警告
+        if 'task_id' in locals() and task_id:
+            return {
+                "status": "success",
+                "message": f"开门命令已发送，但发生错误: {str(e)}",
+                "task_id": task_id,
+                "device_id": request.device_id,
+                "warning": str(e)
+            }
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+# ==================== NFC 任务队列管理 ====================
+
+class NFCTaskResponse(BaseModel):
+    """NFC任务响应模型"""
+    id: int
+    device_id: str
+    command: str
+    payload: Optional[str]
+    status: str
+    result: Optional[str]
+    created_at: datetime
+    sent_at: Optional[datetime]
+    consumed_at: Optional[datetime]
+    
+    class Config:
+        orm_mode = True
+
+
+@router.get("/tasks", response_model=List[NFCTaskResponse])
+def get_nfc_tasks(
+    device_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    查看NFC任务队列
+    
+    参数:
+    - device_id: 设备ID（可选）
+    - status: 任务状态（可选）：pending, sent, done, canceled
+    - limit: 返回数量限制
+    """
+    query = db.query(NFCTask)
+    
+    if device_id:
+        query = query.filter(NFCTask.device_id == device_id)
+    if status:
+        query = query.filter(NFCTask.status == status)
+    
+    tasks = query.order_by(NFCTask.created_at.desc()).limit(limit).all()
+    return tasks
+
+
+@router.get("/tasks/stats")
+def get_tasks_statistics(
+    device_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """获取任务队列统计信息"""
+    query = db.query(NFCTask)
+    
+    if device_id:
+        query = query.filter(NFCTask.device_id == device_id)
+    
+    total = query.count()
+    pending = query.filter(NFCTask.status == "pending").count()
+    sent = query.filter(NFCTask.status == "sent").count()
+    done = query.filter(NFCTask.status == "done").count()
+    canceled = query.filter(NFCTask.status == "canceled").count()
+    
+    return {
+        "total": total,
+        "pending": pending,
+        "sent": sent,
+        "done": done,
+        "canceled": canceled,
+        "device_id": device_id
+    }
+
+
+@router.delete("/tasks/clear")
+def clear_nfc_tasks(
+    device_id: Optional[str] = None,
+    status: Optional[str] = None,
+    older_than_hours: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    清除NFC任务队列
+    
+    参数:
+    - device_id: 设备ID（可选，不指定则清除所有设备）
+    - status: 任务状态（可选，不指定则清除所有状态）
+    - older_than_hours: 清除多少小时之前的任务（可选）
+    """
+    query = db.query(NFCTask)
+    
+    if device_id:
+        query = query.filter(NFCTask.device_id == device_id)
+    
+    if status:
+        query = query.filter(NFCTask.status == status)
+    
+    if older_than_hours:
+        cutoff_time = datetime.utcnow() - timedelta(hours=older_than_hours)
+        query = query.filter(NFCTask.created_at < cutoff_time)
+    
+    # 统计将要删除的任务数量
+    count = query.count()
+    
+    # 执行删除
+    query.delete(synchronize_session=False)
+    db.commit()
+    
+    return {
+        "status": "success",
+        "message": f"已清除 {count} 个任务",
+        "deleted_count": count,
+        "device_id": device_id,
+        "status_filter": status,
+        "older_than_hours": older_than_hours
+    }
+
+
+@router.delete("/tasks/{task_id}")
+def delete_nfc_task(task_id: int, db: Session = Depends(get_db)):
+    """删除指定的NFC任务"""
+    task = db.query(NFCTask).filter(NFCTask.id == task_id).first()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    db.delete(task)
+    db.commit()
+    
+    return {
+        "status": "success",
+        "message": f"任务 {task_id} 已删除",
+        "task_id": task_id
     }

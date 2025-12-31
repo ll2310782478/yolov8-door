@@ -15,10 +15,12 @@ passlib==1.7.4
 bcrypt==4.1.1
 emails==0.6.0
 requests==2.31.0
+yagmail==0.15.293
 
 # 人脸识别依赖
 ultralytics==8.0.236
 insightface==0.7.3
+onnxruntime==1.16.3
 torch==2.1.2
 torchvision==0.16.2
 
