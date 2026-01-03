@@ -1,0 +1,90 @@
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 环境变量文件（包含敏感信息）
+.env
+.env.local
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 日志文件
+*.log
+logs/
+
+# IDE 和编辑器配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 上传的文件和临时文件
+static/uploads/*
+!static/uploads/.gitkeep
+static/qrcodes/*
+!static/qrcodes/.gitkeep
+temp/
+tmp/
+
+# 模型文件（通常很大）
+*.pt
+*.pth
+*.onnx
+*.h5
+*.pb
+
+# 人脸识别数据
+face_data/
+face_encodings/
+
+# 测试和覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# 构建和发布
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+*.iml
+.idea/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 备份文件
+*.bak
+*.backup
+*.old
+
+# 其他临时文件
+*.tmp
+*.cache
