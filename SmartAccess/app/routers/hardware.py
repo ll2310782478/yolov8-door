@@ -6,9 +6,10 @@ from app.database import get_db
 from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask
 from app.utils import check_permission_valid
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel
 from fastapi import Request
+import time
 
 router = APIRouter(
     prefix="/api/hardware",
@@ -16,6 +17,15 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
+# ==================== 蓝牙扫描缓存 ====================
+# 全局缓存：存储最近扫描到的蓝牙设备 {mac: {data, timestamp}}
+bluetooth_scan_cache: Dict[str, dict] = {}
+CACHE_EXPIRE_SECONDS = 60  # 缓存60秒
+
+# ==================== 蓝牙开门冷却期缓存 ====================
+# 全局缓存：记录设备最后开门时间 {mac: timestamp}
+bluetooth_cooldown_cache: Dict[str, float] = {}
+COOLDOWN_PERIOD_SECONDS = 180  # 冷却期3分钟（180秒）
 
 # ==================== Pydantic 模型 ====================
 
@@ -146,6 +156,8 @@ class BluetoothBindingResponse(BaseModel):
     permission_start_date: datetime
     permission_end_date: Optional[datetime]
     max_daily_uses: int
+    daily_use_count: int = 0
+    last_use_date: Optional[datetime] = None
 
     class Config:
         orm_mode = True
@@ -760,13 +772,13 @@ def create_bluetooth_binding(binding: BluetoothBindingCreate, db: Session = Depe
     return bt_binding
 
 
-@router.get("/bluetooth/bindings", response_model=List[BluetoothBindingResponse])
+@router.get("/bluetooth/bindings")
 def list_bluetooth_bindings(
     user_id: Optional[int] = None,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db)
 ):
-    """获取蓝牙设备绑定列表"""
+    """获取蓝牙设备绑定列表（含使用统计）"""
     query = db.query(BluetoothBinding)
     
     if user_id:
@@ -775,7 +787,50 @@ def list_bluetooth_bindings(
         query = query.filter(BluetoothBinding.is_active == is_active)
     
     bindings = query.all()
-    return bindings
+    
+    # 为每个绑定添加使用统计
+    result = []
+    today = datetime.utcnow().date()
+    today_start = datetime.combine(today, datetime.min.time())
+    
+    for binding in bindings:
+        binding_dict = {
+            "id": binding.id,
+            "user_id": binding.user_id,
+            "device_id": binding.device_id,
+            "device_name": binding.device_name,
+            "is_paired": binding.is_paired,
+            "is_active": binding.is_active,
+            "created_at": binding.created_at,
+            "last_connect_time": binding.last_connect_time,
+            "permission_start_date": binding.permission_start_date,
+            "permission_end_date": binding.permission_end_date,
+            "max_daily_uses": binding.max_daily_uses,
+        }
+        
+        # 统计今日使用次数（从AccessLog）
+        daily_count = db.query(AccessLog).filter(
+            AccessLog.user_id == binding.user_id,
+            AccessLog.access_type == "bluetooth",
+            AccessLog.status == "success",
+            AccessLog.timestamp >= today_start,
+            AccessLog.details.like(f"%{binding.device_id}%")
+        ).count()
+        binding_dict["daily_use_count"] = daily_count
+        
+        # 获取最后使用时间（从AccessLog）
+        last_log = db.query(AccessLog).filter(
+            AccessLog.user_id == binding.user_id,
+            AccessLog.access_type == "bluetooth",
+            AccessLog.status == "success",
+            AccessLog.details.like(f"%{binding.device_id}%")
+        ).order_by(AccessLog.timestamp.desc()).first()
+        
+        binding_dict["last_use_date"] = last_log.timestamp if last_log else None
+        
+        result.append(binding_dict)
+    
+    return result
 
 
 @router.put("/bluetooth/binding/{binding_id}", response_model=BluetoothBindingResponse)
@@ -811,6 +866,154 @@ def delete_bluetooth_binding(binding_id: int, db: Session = Depends(get_db)):
     db.delete(binding)
     db.commit()
     return {"message": "绑定已删除"}
+
+
+class BluetoothScanReport(BaseModel):
+    """蓝牙扫描上报数据模型（单个设备）"""
+    mac: str
+    rssi: int
+    device_id: str
+    name: Optional[str] = None
+
+
+class BluetoothBatchScanReport(BaseModel):
+    """蓝牙批量扫描上报数据模型"""
+    devices: list
+    device_id: str
+
+
+@router.post("/bluetooth/report-scan")
+def report_bluetooth_scan(report: BluetoothScanReport):
+    """ESP32上报扫描到的蓝牙设备（单个）"""
+    global bluetooth_scan_cache
+    
+    # 更新缓存
+    bluetooth_scan_cache[report.mac.upper()] = {
+        "mac": report.mac.upper(),
+        "name": report.name or f"BLE-{report.mac[-8:]}",
+        "rssi": report.rssi,
+        "device_id": report.device_id,  # 上报设备ID
+        "timestamp": time.time(),
+        "last_seen": datetime.utcnow().isoformat()
+    }
+    
+    return {"status": "ok", "cached_devices": len(bluetooth_scan_cache)}
+
+
+@router.post("/bluetooth/report-scan-batch")
+def report_bluetooth_scan_batch(report: BluetoothBatchScanReport):
+    """ESP32批量上报扫描到的蓝牙设备"""
+    global bluetooth_scan_cache
+    
+    # 批量更新缓存
+    current_time = time.time()
+    for device in report.devices:
+        mac = device.get("mac", "").upper()
+        if mac:
+            bluetooth_scan_cache[mac] = {
+                "mac": mac,
+                "name": device.get("name") or f"BLE-{mac[-8:]}",
+                "rssi": device.get("rssi", -100),
+                "device_id": report.device_id,
+                "timestamp": current_time,
+                "last_seen": datetime.utcnow().isoformat()
+            }
+    
+    return {"status": "ok", "received": len(report.devices), "cached_devices": len(bluetooth_scan_cache)}
+
+
+@router.get("/bluetooth/scan")
+def scan_bluetooth_devices():
+    """获取最近扫描到的蓝牙设备（从缓存）"""
+    global bluetooth_scan_cache
+    
+    # 清理过期缓存
+    current_time = time.time()
+    expired_keys = [
+        mac for mac, data in bluetooth_scan_cache.items()
+        if current_time - data.get("timestamp", 0) > CACHE_EXPIRE_SECONDS
+    ]
+    for key in expired_keys:
+        del bluetooth_scan_cache[key]
+    
+    # 返回所有有效设备，按RSSI排序（信号强的在前）
+    devices = sorted(
+        bluetooth_scan_cache.values(),
+        key=lambda x: x.get("rssi", -100),
+        reverse=True
+    )
+    
+    return devices
+
+
+@router.post("/bluetooth/verify")
+def verify_bluetooth_device(
+    device_id: str = Body(...),
+    bt_mac: str = Body(...),
+    rssi: int = Body(...),
+    db: Session = Depends(get_db)
+):
+    """验证蓝牙设备权限 - 硬件轮询用"""
+    bt_mac_upper = bt_mac.upper()
+    
+    # ✅ 检查冷却期（3分钟内已开过门）
+    current_time = time.time()
+    if bt_mac_upper in bluetooth_cooldown_cache:
+        last_open_time = bluetooth_cooldown_cache[bt_mac_upper]
+        time_since_last_open = current_time - last_open_time
+        
+        if time_since_last_open < COOLDOWN_PERIOD_SECONDS:
+            # 仍在冷却期内
+            remaining_seconds = int(COOLDOWN_PERIOD_SECONDS - time_since_last_open)
+            remaining_minutes = remaining_seconds // 60
+            remaining_secs = remaining_seconds % 60
+            
+            return {
+                "allow": False,
+                "user_name": "Cooldown",
+                "reason": "In cooldown period",
+                "in_cooldown": True,
+                "cooldown_remaining_seconds": remaining_seconds,
+                "cooldown_remaining_text": f"{remaining_minutes}分{remaining_secs}秒"
+            }
+    
+    # 查询该蓝牙MAC是否有有效的绑定
+    binding = db.query(BluetoothBinding).filter(
+        BluetoothBinding.device_id == bt_mac_upper,
+        BluetoothBinding.is_active == True
+    ).first()
+    
+    if not binding:
+        return {"allow": False, "user_name": "Unknown", "reason": "Device not bound", "in_cooldown": False}
+    
+    # 检查权限是否有效
+    if not check_permission_valid(binding.permission_start_date, binding.permission_end_date):
+        return {"allow": False, "user_name": binding.user.username if binding.user else "Unknown", "reason": "Permission expired", "in_cooldown": False}
+    
+    # 检查每日使用次数限制
+    if binding.max_daily_uses > 0:
+        # 计算今天的使用次数
+        today = datetime.utcnow().date()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_count = db.query(AccessLog).filter(
+            AccessLog.device_id == device_id,
+            AccessLog.user_id == binding.user_id,
+            AccessLog.access_type == "bluetooth",
+            AccessLog.timestamp >= today_start
+        ).count()
+        
+        if today_count >= binding.max_daily_uses:
+            return {"allow": False, "user_name": binding.user.username if binding.user else "Unknown", "reason": "Daily limit reached", "in_cooldown": False}
+    
+    # 权限有效，允许开门
+    user_name = binding.user.username if binding.user else f"User{binding.user_id}"
+    return {
+        "allow": True,
+        "user_name": user_name,
+        "user_id": binding.user_id,
+        "rssi": rssi,
+        "in_cooldown": False
+    }
 
 
 @router.post("/bluetooth/unlock")
@@ -866,6 +1069,43 @@ def enable_bluetooth_pairing(device_id: str, duration_seconds: int = 300, db: Se
         "duration": duration_seconds,
         "expires_at": datetime.utcnow() + timedelta(seconds=duration_seconds)
     }
+
+
+@router.post("/bluetooth/access-log")
+def record_bluetooth_access_log(
+    device_id: str = Body(...),
+    bt_mac: str = Body(...),
+    access_type: str = Body(...),
+    status: str = Body(...),
+    db: Session = Depends(get_db)
+):
+    """记录蓝牙设备访问日志"""
+    bt_mac_upper = bt_mac.upper()
+    
+    # 查询绑定信息获取user_id
+    binding = db.query(BluetoothBinding).filter(
+        BluetoothBinding.device_id == bt_mac_upper
+    ).first()
+    
+    if binding:
+        access_log = AccessLog(
+            user_id=binding.user_id,
+            access_type=access_type,
+            status=status,
+            device_id=device_id,
+            details=f"Bluetooth {access_type}: {bt_mac}"
+        )
+        db.add(access_log)
+        db.commit()
+        
+        # ✅ 开门成功后，记录冷却期（3分钟）
+        if status == "success":
+            bluetooth_cooldown_cache[bt_mac_upper] = time.time()
+            print(f"[Cooldown] 添加设备到冷却期: {bt_mac_upper} (3分钟)")
+        
+        return {"status": "logged", "log_id": access_log.id}
+    
+    return {"status": "device_not_found"}
 
 
 # ==================== 访问日志管理 ====================

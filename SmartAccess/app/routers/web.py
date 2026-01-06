@@ -75,6 +75,12 @@ def web_nfc():
     return load_template("nfc.html")
 
 
+@router.get("/bluetooth", response_class=HTMLResponse)
+def web_bluetooth():
+    """蓝牙设备管理页面"""
+    return load_template("bluetooth.html")
+
+
 @router.get("/remote-door", response_class=HTMLResponse)
 def web_remote_door():
     """远程开门管理页面"""

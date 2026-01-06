@@ -6,9 +6,10 @@ from app.database import get_db
 from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask
 from app.utils import check_permission_valid
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel
 from fastapi import Request
+import time
 
 router = APIRouter(
     prefix="/api/hardware",
@@ -16,6 +17,10 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
+# ==================== 蓝牙扫描缓存 ====================
+# 全局缓存：存储最近扫描到的蓝牙设备 {mac: {data, timestamp}}
+bluetooth_scan_cache: Dict[str, dict] = {}
+CACHE_EXPIRE_SECONDS = 60  # 缓存60秒
 
 # ==================== Pydantic 模型 ====================
 
@@ -661,6 +666,97 @@ def delete_bluetooth_binding(binding_id: int, db: Session = Depends(get_db)):
     return {"message": "绑定已删除"}
 
 
+@router.post("/bluetooth/verify")
+def verify_bluetooth_access(request: dict, db: Session = Depends(get_db)):
+    """验证蓝牙设备权限（ESP32调用）"""
+    device_id = request.get("device_id")  # 门禁设备ID
+    bt_mac = request.get("bt_mac")  # 蓝牙MAC地址
+    rssi = request.get("rssi", 0)  # 信号强度
+    
+    # 查找该MAC地址的绑定记录
+    binding = db.query(BluetoothBinding).filter(
+        BluetoothBinding.device_id == bt_mac,
+        BluetoothBinding.is_active == True
+    ).first()
+    
+    if not binding:
+        return {
+            "allow": False,
+            "message": "蓝牙设备未绑定或已禁用"
+        }
+    
+    # 检查权限时效
+    now = datetime.utcnow()
+    if binding.permission_start_date and now < binding.permission_start_date:
+        return {"allow": False, "message": "权限未生效"}
+    
+    if binding.permission_end_date and now > binding.permission_end_date:
+        return {"allow": False, "message": "权限已过期"}
+    
+    # 检查每日使用次数
+    if binding.max_daily_uses > 0:
+        if binding.last_use_date and binding.last_use_date.date() == now.date():
+            if binding.daily_use_count >= binding.max_daily_uses:
+                return {"allow": False, "message": "今日使用次数已达上限"}
+        else:
+            # 新的一天，重置计数
+            binding.daily_use_count = 0
+    
+    # 获取用户信息
+    user = db.query(User).filter(User.id == binding.user_id).first()
+    if not user or not user.is_active:
+        return {"allow": False, "message": "用户不存在或已禁用"}
+    
+    # 更新最后连接时间
+    binding.last_connect_time = now
+    db.commit()
+    
+    return {
+        "allow": True,
+        "user_id": user.id,
+        "user_name": user.full_name or user.username,
+        "message": "授权通过，等待按钮确认"
+    }
+
+
+@router.post("/bluetooth/access-log")
+def log_bluetooth_access(request: dict, db: Session = Depends(get_db)):
+    """记录蓝牙开门日志（ESP32调用）"""
+    device_id = request.get("device_id")
+    bt_mac = request.get("bt_mac")
+    access_type = request.get("access_type", "bluetooth")
+    status = request.get("status", "success")
+    
+    # 查找绑定记录获取用户ID
+    binding = db.query(BluetoothBinding).filter(
+        BluetoothBinding.device_id == bt_mac
+    ).first()
+    
+    if not binding:
+        return {"message": "未找到绑定记录"}
+    
+    # 更新使用统计
+    now = datetime.utcnow()
+    if binding.last_use_date and binding.last_use_date.date() == now.date():
+        binding.daily_use_count += 1
+    else:
+        binding.daily_use_count = 1
+    binding.last_use_date = now
+    
+    # 记录访问日志
+    access_log = AccessLog(
+        user_id=binding.user_id,
+        access_type=access_type,
+        status=status,
+        device_id=device_id,
+        details=f"蓝牙MAC: {bt_mac}"
+    )
+    db.add(access_log)
+    db.commit()
+    
+    return {"message": "日志记录成功"}
+
+
 @router.post("/bluetooth/unlock")
 def bluetooth_unlock(user_id: int, device_id: str, db: Session = Depends(get_db)):
     """蓝牙远程开锁"""
@@ -714,6 +810,48 @@ def enable_bluetooth_pairing(device_id: str, duration_seconds: int = 300, db: Se
         "duration": duration_seconds,
         "expires_at": datetime.utcnow() + timedelta(seconds=duration_seconds)
     }
+
+
+@router.post("/bluetooth/report-scan")
+def report_bluetooth_scan(mac: str, rssi: int, device_id: str, name: str = None):
+    """ESP32上报扫描到的蓝牙设备"""
+    global bluetooth_scan_cache
+    
+    # 更新缓存
+    bluetooth_scan_cache[mac.upper()] = {
+        "mac": mac.upper(),
+        "name": name or f"BLE-{mac[-8:]}",
+        "rssi": rssi,
+        "device_id": device_id,  # 上报设备ID
+        "timestamp": time.time(),
+        "last_seen": datetime.utcnow().isoformat()
+    }
+    
+    return {"status": "ok", "cached_devices": len(bluetooth_scan_cache)}
+
+
+@router.get("/bluetooth/scan")
+def scan_bluetooth_devices():
+    """获取最近扫描到的蓝牙设备（从缓存）"""
+    global bluetooth_scan_cache
+    
+    # 清理过期缓存
+    current_time = time.time()
+    expired_keys = [
+        mac for mac, data in bluetooth_scan_cache.items()
+        if current_time - data.get("timestamp", 0) > CACHE_EXPIRE_SECONDS
+    ]
+    for key in expired_keys:
+        del bluetooth_scan_cache[key]
+    
+    # 返回所有有效设备，按RSSI排序（信号强的在前）
+    devices = sorted(
+        bluetooth_scan_cache.values(),
+        key=lambda x: x.get("rssi", -100),
+        reverse=True
+    )
+    
+    return devices
 
 
 # ==================== 访问日志管理 ====================

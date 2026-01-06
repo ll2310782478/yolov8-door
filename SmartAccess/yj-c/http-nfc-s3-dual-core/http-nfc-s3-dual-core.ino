@@ -48,6 +48,10 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
 
 // ==================== 1. 用户配置 ====================
 
@@ -95,6 +99,11 @@ const char* DEVICE_MODE = "remote_nfc";
 #define RGB_PIN 48
 #define RGB_COUNT 1
 
+// 确认按钮 (外部按钮，GPIO3 - RX引脚)
+// 连接方式: 按钮一端接 GPIO3，另一端接 GND
+// 配置: INPUT_PULLUP（内部上拉，按下时为LOW）
+#define CONFIRM_BTN_PIN 3
+
 // ==================== 3. 全局数据结构 ====================
 
 // 事件类型定义
@@ -103,6 +112,10 @@ enum EventType {
   EVENT_NFC_PERMISSION_OK,  // 服务器授予权限
   EVENT_NFC_PERMISSION_DENY, // 服务器拒绝
   EVENT_REMOTE_DOOR_OPEN,   // 远程开门指令
+  EVENT_BLE_DEVICE_DETECTED,// 蓝牙设备检测到
+  EVENT_BLE_PERMISSION_OK,  // 蓝牙设备授权通过
+  EVENT_BLE_PERMISSION_DENY,// 蓝牙设备授权拒绝
+  EVENT_BTN_CONFIRM,        // 按钮确认
   EVENT_NETWORK_ERROR,      // 网络错误
   EVENT_SYSTEM_ERROR        // 系统错误
 };
@@ -130,12 +143,24 @@ struct DoorStatus {
   char trigger_source[16];
 };
 
+// 蓝牙设备状态结构
+struct BLEDeviceStatus {
+  bool device_detected;       // 是否检测到授权设备
+  char mac_address[18];       // MAC地址
+  char user_name[32];         // 用户名
+  int rssi;                   // 信号强度
+  unsigned long detect_time;  // 检测到的时间
+  bool waiting_confirm;       // 等待按钮确认
+  unsigned long confirm_timeout; // 确认超时时间
+};
+
 // ==================== 4. 互斥锁和队列 ====================
 
 // 保护共享资源的互斥锁
 SemaphoreHandle_t nfc_mutex = NULL;
 SemaphoreHandle_t door_mutex = NULL;
 SemaphoreHandle_t network_mutex = NULL;
+SemaphoreHandle_t ble_mutex = NULL;
 
 // 事件队列（跨核通信）
 QueueHandle_t event_queue = NULL;
@@ -143,7 +168,79 @@ QueueHandle_t event_queue = NULL;
 // 共享状态变量
 NFCStatus nfc_status = {false, "", 0, false};
 DoorStatus door_status = {false, 0, 1, "none"};
+BLEDeviceStatus ble_status = {false, "", "", 0, 0, false, 0};
 bool enroll_mode = false;  // ENROLL 模式下只返回首张卡
+
+// 授权蓝牙设备白名单（最多20个）
+char authorized_bt_macs[20][18];
+int authorized_bt_count = 0;
+unsigned long last_whitelist_update = 0;
+
+// 蓝牙开门冷却期记录（防止同一设备3分钟内重复提示）
+struct BLECooldown {
+  char mac_address[18];
+  unsigned long open_time;
+};
+BLECooldown ble_cooldowns[10];  // 最多记录10个设备的冷却期
+int ble_cooldown_count = 0;
+const unsigned long BLE_COOLDOWN_PERIOD = 180000;  // 3分钟冷却期（毫秒）
+
+// 检查设备是否在冷却期内
+bool isInCooldown(const char* mac) {
+  unsigned long now = millis();
+  for (int i = 0; i < ble_cooldown_count; i++) {
+    if (strcasecmp(ble_cooldowns[i].mac_address, mac) == 0) {
+      // 检查是否超过冷却期
+      if (now - ble_cooldowns[i].open_time < BLE_COOLDOWN_PERIOD) {
+        return true;  // 仍在冷却期内
+      } else {
+        // 已过冷却期，移除记录
+        for (int j = i; j < ble_cooldown_count - 1; j++) {
+          ble_cooldowns[j] = ble_cooldowns[j + 1];
+        }
+        ble_cooldown_count--;
+        return false;
+      }
+    }
+  }
+  return false;  // 没有冷却记录
+}
+
+// 添加设备到冷却期列表
+void addToCooldown(const char* mac) {
+  // 如果已存在，更新时间
+  for (int i = 0; i < ble_cooldown_count; i++) {
+    if (strcasecmp(ble_cooldowns[i].mac_address, mac) == 0) {
+      ble_cooldowns[i].open_time = millis();
+      Serial.printf("[BLE] 更新冷却期: %s (3分钟)\n", mac);
+      return;
+    }
+  }
+  
+  // 添加新记录（如果满了，覆盖最老的）
+  if (ble_cooldown_count < 10) {
+    strncpy(ble_cooldowns[ble_cooldown_count].mac_address, mac, 17);
+    ble_cooldowns[ble_cooldown_count].mac_address[17] = '\0';
+    ble_cooldowns[ble_cooldown_count].open_time = millis();
+    ble_cooldown_count++;
+  } else {
+    // 覆盖最老的记录（索引0）
+    strncpy(ble_cooldowns[0].mac_address, mac, 17);
+    ble_cooldowns[0].mac_address[17] = '\0';
+    ble_cooldowns[0].open_time = millis();
+  }
+  Serial.printf("[BLE] 添加冷却期: %s (3分钟)\n", mac);
+}
+
+// 检查MAC是否在授权列表中
+bool isAuthorizedBtDevice(const char* mac) {
+  for (int i = 0; i < authorized_bt_count; i++) {
+    if (strcasecmp(authorized_bt_macs[i], mac) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // ==================== 5. 硬件对象 ====================
 
@@ -270,9 +367,14 @@ void initHardware() {
   nfc_mutex = xSemaphoreCreateMutex();
   door_mutex = xSemaphoreCreateMutex();
   network_mutex = xSemaphoreCreateMutex();
+  ble_mutex = xSemaphoreCreateMutex();
   
   // 初始化事件队列（最多 10 个事件待处理）
   event_queue = xQueueCreate(10, sizeof(SystemEvent));
+  
+  // 初始化确认按钮（板载BOOT按钮）
+  pinMode(CONFIRM_BTN_PIN, INPUT_PULLUP);  // 启用上拉电阻
+  Serial.println("🔘 确认按钮初始化完成 (GPIO0 - BOOT按钮, 上拉电阻已启用)");
   
   // 初始化 I2S 音频 (MAX98357A)
   i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
@@ -363,25 +465,234 @@ void playErrorSound() {
   }
 }
 
+// ==================== BLE 蓝牙扫描功能 ====================
+
+// BLE 扫描对象
+BLEScan* pBLEScan = nullptr;
+
+// BLE 扫描结果缓存（最多10个设备）
+struct BLEScanResult {
+  char mac[18];
+  char name[32];  // 设备名称
+  int rssi;
+  unsigned long timestamp;
+  bool reported;  // 是否已上报
+};
+BLEScanResult scan_results[10];
+int scan_results_count = 0;
+
+// BLE 扫描回调类
+class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) {
+    // 获取设备MAC地址、名称和RSSI
+    String macAddr = advertisedDevice.getAddress().toString().c_str();
+    String deviceName = "";
+    
+    // 尝试获取设备名称
+    if (advertisedDevice.haveName()) {
+      deviceName = advertisedDevice.getName().c_str();
+    }
+    
+    int rssi = advertisedDevice.getRSSI();
+    
+    // 仅处理信号强度大于-70dBm的设备（约1-2米范围）
+    if (rssi > -70) {
+      Serial.printf("[BLE] 检测到设备: %s, RSSI: %d\n", macAddr.c_str(), rssi);
+      
+      // 添加到扫描结果缓存
+      if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+        // 检查是否已存在
+        bool found = false;
+        for (int i = 0; i < scan_results_count; i++) {
+          if (strcmp(scan_results[i].mac, macAddr.c_str()) == 0) {
+            // 更新RSSI、名称和时间戳
+            scan_results[i].rssi = rssi;
+            strncpy(scan_results[i].name, deviceName.c_str(), sizeof(scan_results[i].name) - 1);
+            scan_results[i].name[sizeof(scan_results[i].name) - 1] = '\0';
+            scan_results[i].timestamp = millis();
+            found = true;
+            break;
+          }
+        }
+        
+        // 如果不存在且有空间，添加新设备
+        if (!found && scan_results_count < 10) {
+          strncpy(scan_results[scan_results_count].mac, macAddr.c_str(), 17);
+          strncpy(scan_results[scan_results_count].name, deviceName.c_str(), sizeof(scan_results[scan_results_count].name) - 1);
+          scan_results[scan_results_count].name[sizeof(scan_results[scan_results_count].name) - 1] = '\0';
+          scan_results[scan_results_count].rssi = rssi;
+          scan_results[scan_results_count].timestamp = millis();
+          scan_results[scan_results_count].reported = false;
+          scan_results_count++;
+        }
+        
+        xSemaphoreGive(ble_mutex);
+      }
+    }
+  }
+};
+
+// 初始化BLE扫描
+void initBLE() {
+  Serial.println("🔵 初始化 BLE 蓝牙...");
+  BLEDevice::init("SmartDoor-BT");
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  pBLEScan->setActiveScan(true);  // 主动扫描
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
+  Serial.println("✅ BLE 初始化完成");
+}
+
+// 更新授权蓝牙设备白名单
+void updateAuthorizedDevices() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  HTTPClient http;
+  String url = String("http://") + currentHost + ":" + String(SERVER_PORT) + "/api/hardware/bluetooth/bindings";
+  
+  if (http.begin(wifiClient, url)) {
+    http.setTimeout(5000);  // 5秒超时
+    int code = http.GET();
+    
+    if (code == 200) {
+      String response = http.getString();
+      // 使用DynamicJsonDocument以支持更多设备
+      DynamicJsonDocument doc(4096);
+      
+      DeserializationError error = deserializeJson(doc, response);
+      if (error == DeserializationError::Ok) {
+        JsonArray bindings = doc.as<JsonArray>();
+        
+        // 先在临时数组中处理
+        int new_count = 0;
+        char temp_macs[20][18];
+        
+        for (JsonObject binding : bindings) {
+          if (binding["is_active"].as<bool>() && new_count < 20) {
+            String mac = binding["device_id"].as<String>();
+            mac.toUpperCase();
+            strncpy(temp_macs[new_count], mac.c_str(), 17);
+            temp_macs[new_count][17] = '\0';
+            new_count++;
+          }
+        }
+        
+        // 一次性更新白名单（减少锁持有时间）
+        if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(100))) {
+          authorized_bt_count = new_count;
+          for (int i = 0; i < new_count; i++) {
+            strncpy(authorized_bt_macs[i], temp_macs[i], 17);
+            authorized_bt_macs[i][17] = '\0';
+          }
+          xSemaphoreGive(ble_mutex);
+          Serial.printf("[BLE] 白名单更新完成，共 %d 个授权设备\n", authorized_bt_count);
+        }
+      } else {
+        Serial.printf("[BLE] JSON解析失败: %s\n", error.c_str());
+      }
+    } else {
+      Serial.printf("[BLE] 白名单更新失败，HTTP: %d\n", code);
+    }
+    
+    http.end();
+  }
+}
+
+// 按钮防抖检测（只在蓝牙有权限时检测）
+bool checkButtonPress() {
+  static unsigned long last_press_time = 0;
+  static int debounce_counter = 0;
+  static const int DEBOUNCE_THRESHOLD = 3;  // 3次连续采样确认（约30ms）
+  static unsigned long startup_time = 0;
+  
+  // ✅ 启动延迟：5秒内不检测按钮（避免上电时GPIO0误触）
+  if (startup_time == 0) {
+    startup_time = millis();
+    debounce_counter = 0;
+    return false;
+  }
+  if (millis() - startup_time < 5000) {
+    debounce_counter = 0;
+    return false;
+  }
+  
+  // ✅ 检查是否处于等待确认状态（只有蓝牙验证通过时才设置）
+  bool waiting = false;
+  if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+    waiting = ble_status.waiting_confirm;
+    xSemaphoreGive(ble_mutex);
+  }
+  
+  // 只有在蓝牙有权限时才检测按钮
+  if (!waiting) {
+    // 重置防抖计数器
+    if (debounce_counter > 0) {
+      debounce_counter = 0;
+    }
+    return false;
+  }
+  
+  bool current_state = (digitalRead(CONFIRM_BTN_PIN) == LOW);  // true=按下, false=松开
+  
+  // 防抖逻辑：3次连续采样确认按下状态（仅在等待确认时）
+  if (current_state) {
+    // GPIO=LOW（按钮被按下）
+    debounce_counter++;
+    if (debounce_counter == 1) {
+      Serial.printf("[Button] ✓ 检测到按下: debounce=%d (等待中)\n", debounce_counter);
+    }
+    
+    if (debounce_counter >= DEBOUNCE_THRESHOLD) {
+      // 确认按钮已按下
+      unsigned long now = millis();
+      if (now - last_press_time > 300) {  // 防止重复触发（300ms间隔）
+        last_press_time = now;
+        debounce_counter = 0;
+        Serial.printf("[Button] ✓✓✓ 按钮确认成功！ (time=%lu)\n", now);
+        return true;
+      }
+      // 即使达到阈值但未超过300ms间隔，也重置计数器以防止卡住
+      debounce_counter = 0;
+    }
+  } else {
+    // GPIO=HIGH（按钮已释放）
+    if (debounce_counter > 0) {
+      Serial.printf("[Button] 释放，debounce=%d\n", debounce_counter);
+    }
+    debounce_counter = 0;  // 重置计数器
+  }
+  
+  return false;
+}
+
+// ==================== 显示更新函数 ====================
+
 // 更新 TFT 显示内容
 void updateDisplay() {
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextSize(2);
   tft.setTextColor(ST77XX_CYAN);
   
-  // 显示设备信息
+  // 显示设备信息和蓝牙MAC地址
   tft.setCursor(5, 10);
   tft.println("Door Ctrl 2");
+  tft.setCursor(5, 30);
+  tft.setTextColor(ST77XX_YELLOW);
+  tft.setTextSize(1);
+  String bleMac = BLEDevice::getAddress().toString().c_str();
+  tft.printf("BLE: %s", bleMac.c_str());
+  tft.setTextSize(2);
   
   // WiFi 状态
-  tft.setCursor(5, 35);
+  tft.setCursor(5, 50);
   tft.setTextColor(WiFi.status() == WL_CONNECTED ? ST77XX_GREEN : ST77XX_RED);
   tft.print("WiFi: ");
   tft.println(WiFi.status() == WL_CONNECTED ? "OK" : "OFF");
   
   // IP 地址
   if (WiFi.status() == WL_CONNECTED) {
-    tft.setCursor(5, 55);
+    tft.setCursor(5, 70);
     tft.setTextColor(ST77XX_WHITE);
     tft.setTextSize(1);
     tft.println(WiFi.localIP().toString());
@@ -389,13 +700,13 @@ void updateDisplay() {
   }
   
   // NFC 状态
-  tft.setCursor(5, 75);
+  tft.setCursor(5, 90);
   tft.setTextColor(ST77XX_YELLOW);
   if (xSemaphoreTake(nfc_mutex, pdMS_TO_TICKS(50))) {
     if (strlen(nfc_status.last_card_uid) > 0) {
       tft.print("Card: ");
       tft.setTextSize(1);
-      tft.setCursor(5, 95);
+      tft.setCursor(5, 110);
       tft.println(nfc_status.last_card_uid);
       tft.setTextSize(2);
     } else {
@@ -404,25 +715,50 @@ void updateDisplay() {
     xSemaphoreGive(nfc_mutex);
   }
   
-  // 门锁状态
-  tft.setCursor(5, 115);
-  if (xSemaphoreTake(door_mutex, pdMS_TO_TICKS(50))) {
-    if (door_status.is_open) {
+  // 蓝牙状态
+  tft.setCursor(5, 130);
+  tft.setTextColor(ST77XX_MAGENTA);
+  if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+    if (ble_status.waiting_confirm) {
+      // ✅ 只有授权成功时才显示"点击按钮开门"
       tft.setTextColor(ST77XX_GREEN);
-      tft.println("DOOR: OPEN");
-      
-      // 显示剩余时间
-      unsigned long elapsed = millis() - door_status.open_time;
-      unsigned long remaining = elapsed < 3000 ? (3000 - elapsed) / 1000 : 0;
-      tft.setCursor(5, 140);
-      tft.setTextSize(3);
-      tft.printf("%lus", remaining);
+      tft.setTextSize(2);
+      tft.println(">>> PRESS <<<");
+      tft.setCursor(5, 155);
+      tft.println("BOOT BUTTON");
+      tft.setCursor(5, 180);
+      tft.setTextSize(1);
+      tft.setTextColor(ST77XX_CYAN);
+      tft.printf("User: %s", ble_status.user_name);
       tft.setTextSize(2);
     } else {
-      tft.setTextColor(ST77XX_RED);
-      tft.println("DOOR: LOCK");
+      // ❌ 未授权或正在扫描时，什么都不显示
+      tft.println("                 ");
     }
-    xSemaphoreGive(door_mutex);
+    xSemaphoreGive(ble_mutex);
+  }
+  
+  // 门锁状态
+  if (!ble_status.waiting_confirm) {  // 蓝牙确认时不显示门锁状态（避免覆盖）
+    tft.setCursor(5, 190);
+    if (xSemaphoreTake(door_mutex, pdMS_TO_TICKS(50))) {
+      if (door_status.is_open) {
+        tft.setTextColor(ST77XX_GREEN);
+        tft.println("DOOR: OPEN");
+        
+        // 显示剩余时间
+        unsigned long elapsed = millis() - door_status.open_time;
+        unsigned long remaining = elapsed < 3000 ? (3000 - elapsed) / 1000 : 0;
+        tft.setCursor(80, 210);
+        tft.setTextSize(3);
+        tft.printf("%lus", remaining);
+        tft.setTextSize(2);
+      } else {
+        tft.setTextColor(ST77XX_RED);
+        tft.println("DOOR: LOCK");
+      }
+      xSemaphoreGive(door_mutex);
+    }
   }
   
   // 显示运行时间
@@ -616,46 +952,285 @@ void networkPoller(void *parameter) {
       
       // 执行轮询（可能阻塞，但在 Core1 上，不影响 Core0 的 NFC）
       HTTPClient http;
+      http.setTimeout(5000);  // 添加5秒超时，防止长时间阻塞
+      
       String url = String("http://") + currentHost + ":" + String(SERVER_PORT) 
                  + "/api/hardware/nfc/command/poll?device_id=" + DEVICE_ID;
       
       if (http.begin(wifiClient, url)) {
         int code = http.GET();
-        String response = http.getString();
-        http.end();
         
-        Serial.printf("[Network] 轮询返回 %d: %s\n", code, response.c_str());
-        
-        if (code == 200 && response.length() > 10) {
-          // 解析 JSON 获取命令类型
-          StaticJsonDocument<256> doc;
-          DeserializationError err = deserializeJson(doc, response);
+        if (code == 200) {
+          String response = http.getString();
+          http.end();
           
-          if (!err) {
-            String command = doc["command"].as<String>();
+          Serial.printf("[Network] 轮询返回 %d: %s\n", code, response.c_str());
+          
+          if (response.length() > 10 && response.length() < 2000) {  // 合理性检查
+            // 解析 JSON 获取命令类型
+            DynamicJsonDocument doc(512);  // 增加缓冲区到512字节（从256字节）
+            DeserializationError err = deserializeJson(doc, response);
             
-            if (command == "OPEN") {
-              Serial.println("[Network] 收到远程开门指令");
-              SystemEvent event;
-              event.type = EVENT_REMOTE_DOOR_OPEN;
-              strcpy(event.data, "remote");
-              event.timestamp = now;
-              xQueueSend(event_queue, &event, 0);
-            }
-            else if (command == "ENROLL" || command == "SCAN") {
-              Serial.printf("[Network] 收到 %s 指令，触发 NFC 读卡\n", command.c_str());
-              // 通知 NFC 监控线程立即执行一次扫描
-              xSemaphoreTake(nfc_mutex, portMAX_DELAY);
-              nfc_status.force_read = true;
-              enroll_mode = (command == "ENROLL");  // ENROLL 仅返回首张卡
-              xSemaphoreGive(nfc_mutex);
+            if (!err && doc.containsKey("command")) {
+              String command = doc["command"].as<String>();
+              
+              if (command == "OPEN") {
+                Serial.println("[Network] 收到远程开门指令");
+                SystemEvent event;
+                event.type = EVENT_REMOTE_DOOR_OPEN;
+                strcpy(event.data, "remote");
+                event.timestamp = now;
+                xQueueSend(event_queue, &event, 0);
+              }
+              else if (command == "ENROLL" || command == "SCAN") {
+                Serial.printf("[Network] 收到 %s 指令，触发 NFC 读卡\n", command.c_str());
+                // 通知 NFC 监控线程立即执行一次扫描
+                if (xSemaphoreTake(nfc_mutex, pdMS_TO_TICKS(50))) {
+                  nfc_status.force_read = true;
+                  enroll_mode = (command == "ENROLL");  // ENROLL 仅返回首张卡
+                  xSemaphoreGive(nfc_mutex);
+                }
+              }
             }
           }
+        } else {
+          http.end();
+          Serial.printf("[Network] 轮询返回 %d\n", code);
         }
+      } else {
+        Serial.println("[Network] 轮询请求失败，无法连接到服务器");
       }
     }
     
     vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
+// ==================== 9.5 蓝牙扫描线程 (Core 1) ====================
+/**
+ * 核心 1：BLE 设备扫描任务
+ */
+void bleScanner(void *parameter) {
+  // 在任务内初始化BLE（避免setup()栈溢出）
+  Serial.println("🔵 初始化 BLE 蓝牙...");
+  BLEDevice::init("SmartDoor-BT");
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  pBLEScan->setActiveScan(true);  // 主动扫描
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
+  Serial.println("✅ BLE 初始化完成");
+  
+  // 初始化授权设备白名单
+  updateAuthorizedDevices();
+  
+  Serial.println("[Core1] BLE扫描线程已启动");
+  
+  unsigned long last_report_time = 0;
+  const unsigned long REPORT_INTERVAL = 5000;  // 5秒上报一次
+  
+  while (true) {
+    // 扫描3秒
+    BLEScanResults* results = pBLEScan->start(3, false);
+    pBLEScan->clearResults();
+    
+    // 检查是否有待确认的蓝牙开门请求超时
+    if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+      if (ble_status.waiting_confirm) {
+        unsigned long now = millis();
+        if (now > ble_status.confirm_timeout) {
+          // 超时，取消等待
+          Serial.println("[BLE] 确认超时，取消开门请求");
+          ble_status.waiting_confirm = false;
+          ble_status.device_detected = false;
+          playErrorSound();  // 播放错误音
+        }
+      }
+      xSemaphoreGive(ble_mutex);
+    }
+    
+    // 定期上报扫描结果（在mutex外面）
+    unsigned long now = millis();
+    if (WiFi.status() == WL_CONNECTED && now - last_report_time > REPORT_INTERVAL) {
+      last_report_time = now;
+      
+      // 复制扫描结果到临时数组（避免长时间持有mutex）
+      BLEScanResult temp_results[10];
+      int temp_count = 0;
+      
+      if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+        temp_count = scan_results_count < 10 ? scan_results_count : 10;
+        memcpy(temp_results, scan_results, temp_count * sizeof(BLEScanResult));
+        xSemaphoreGive(ble_mutex);
+      }
+      
+      // 批量上报（合并成一个JSON数组）
+      if (temp_count > 0) {
+        HTTPClient http;
+        http.setTimeout(5000);  // 5秒超时
+        String url = String("http://") + currentHost + ":" + String(SERVER_PORT) + "/api/hardware/bluetooth/report-scan-batch";
+        
+        if (http.begin(wifiClient, url)) {
+          // 构建JSON数组
+          DynamicJsonDocument doc(2048);  // 增加缓冲区
+          JsonArray devices = doc.createNestedArray("devices");
+          
+          for (int i = 0; i < temp_count; i++) {
+            JsonObject device = devices.createNestedObject();
+            device["mac"] = temp_results[i].mac;
+            device["rssi"] = temp_results[i].rssi;
+            device["name"] = String(temp_results[i].name);
+          }
+          doc["device_id"] = DEVICE_ID;
+          
+          String body;
+          serializeJson(doc, body);
+          
+          http.addHeader("Content-Type", "application/json");
+          int code = http.POST((uint8_t*)body.c_str(), body.length());
+          
+          if (code == 200) {
+            Serial.printf("[BLE] 批量上报 %d 个设备\n", temp_count);
+            
+            // 检查授权设备
+            for (int i = 0; i < temp_count; i++) {
+              if (isAuthorizedBtDevice(temp_results[i].mac)) {
+                // ✅ 检查是否在冷却期内（3分钟内已开过门）
+                if (isInCooldown(temp_results[i].mac)) {
+                  Serial.printf("[BLE] 设备在冷却期内，跳过: %s\n", temp_results[i].mac);
+                  break;  // 跳过该设备
+                }
+                
+                SystemEvent event;
+                event.type = EVENT_BLE_DEVICE_DETECTED;
+                strncpy(event.data, temp_results[i].mac, sizeof(event.data) - 1);
+                event.timestamp = millis();
+                
+                if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+                  ble_status.rssi = temp_results[i].rssi;
+                  xSemaphoreGive(ble_mutex);
+                }
+                
+                xQueueSend(event_queue, &event, 0);
+                Serial.printf("[BLE] 授权设备靠近: %s\n", temp_results[i].mac);
+                break;  // 只处理第一个授权设备
+              }
+            }
+          } else {
+            Serial.printf("[BLE] 批量上报失败: %d\n", code);
+          }
+          
+          http.end();
+        }
+      }
+      
+      // 清理过期设备和重置上报状态
+      if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+        unsigned long current_time = millis();
+        
+        // 清理过期设备（超过60秒）
+        for (int i = scan_results_count - 1; i >= 0; i--) {
+          if (current_time - scan_results[i].timestamp > 60000) {
+            for (int j = i; j < scan_results_count - 1; j++) {
+              scan_results[j] = scan_results[j + 1];
+            }
+            scan_results_count--;
+          }
+        }
+        
+        // 重置上报状态，下次继续上报
+        for (int i = 0; i < scan_results_count; i++) {
+          scan_results[i].reported = false;
+        }
+        
+        xSemaphoreGive(ble_mutex);
+      }
+      
+      // 更新授权白名单（每60秒）
+      static unsigned long last_whitelist_update = 0;
+      if (now - last_whitelist_update > 60000) {
+        updateAuthorizedDevices();
+        last_whitelist_update = now;
+      }
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(1000));  // 1秒间隔
+  }
+}
+
+// ==================== 9.6 按钮检测线程 (Core 0) ====================
+/**
+ * 核心 0：BOOT按钮检测任务
+ */
+void buttonMonitor(void *parameter) {
+  Serial.println("[Core1] 按钮监听线程已启动 (优先级4 - 最高)");
+  unsigned long last_log_time = 0;
+  unsigned long last_gpio_check = 0;
+  
+  while (true) {
+    // 定期输出GPIO0状态用于调试（每10秒）
+    unsigned long now = millis();
+    if (now - last_log_time > 10000) {
+      last_log_time = now;
+      bool gpio0_state = (digitalRead(CONFIRM_BTN_PIN) == LOW);  // true=按下, false=松开
+      bool waiting = false;
+      if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+        waiting = ble_status.waiting_confirm;
+        xSemaphoreGive(ble_mutex);
+      }
+      Serial.printf("[Button] GPIO0=%s, waiting_confirm=%s\n", 
+                    gpio0_state ? "LOW(按下)" : "HIGH(松开)", 
+                    waiting ? "true" : "false");
+    }
+    
+    // 每100ms检查一次GPIO状态用于更细粒度的调试
+    if (now - last_gpio_check > 100) {
+      last_gpio_check = now;
+      bool waiting = false;
+      if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
+        waiting = ble_status.waiting_confirm;
+        xSemaphoreGive(ble_mutex);
+      }
+      // 只在等待确认状态下记录GPIO状态
+      if (waiting) {
+        bool gpio0_state = (digitalRead(CONFIRM_BTN_PIN) == LOW);
+        if (gpio0_state) {
+          Serial.printf("[Button] ⚡ 检测到GPIO0=LOW (等待中)\n");
+        }
+      }
+    }
+    
+    // 检查按钮是否按下
+    if (checkButtonPress()) {
+      Serial.println("[Button] ✓✓✓ 按钮确认完成！");
+      
+      // 检查是否处于蓝牙等待确认状态
+      bool should_open = false;
+      char mac_copy[18] = "";
+      
+      if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(100))) {
+        if (ble_status.waiting_confirm) {
+          should_open = true;
+          strncpy(mac_copy, ble_status.mac_address, sizeof(mac_copy) - 1);
+          ble_status.waiting_confirm = false;  // 清除等待标志
+        }
+        xSemaphoreGive(ble_mutex);
+      }
+      
+      if (should_open) {
+        // 发送按钮确认事件
+        SystemEvent event;
+        event.type = EVENT_BTN_CONFIRM;
+        strncpy(event.data, mac_copy, sizeof(event.data) - 1);
+        event.timestamp = millis();
+        xQueueSend(event_queue, &event, 0);
+        
+        Serial.printf("[Button] 按钮确认开门: %s\n", mac_copy);
+        playCardBeep();  // 播放确认音
+      }
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(50));  // 50ms轮询
   }
 }
 
@@ -824,6 +1399,128 @@ void eventHandler() {
         break;
       }
       
+      case EVENT_BLE_DEVICE_DETECTED: {
+        // 蓝牙设备检测到 - 验证权限
+        Serial.printf("[Event] 蓝牙设备检测: %s\n", event.data);
+        
+        if (WiFi.status() == WL_CONNECTED) {
+          HTTPClient http;
+          String url = String("http://") + currentHost + ":" + String(SERVER_PORT) + "/api/hardware/bluetooth/verify";
+          
+          if (http.begin(wifiClient, url)) {
+            StaticJsonDocument<256> doc;
+            doc["device_id"] = DEVICE_ID;
+            doc["bt_mac"] = String(event.data);
+            doc["rssi"] = ble_status.rssi;
+            String body;
+            serializeJson(doc, body);
+            
+            http.addHeader("Content-Type", "application/json");
+            int code = http.POST((uint8_t*)body.c_str(), body.length());
+            String response = http.getString();
+            http.end();
+            
+            Serial.printf("[BLE] 验证响应 code=%d, resp=%s\n", code, response.c_str());
+            
+            if (code == 200) {
+              StaticJsonDocument<256> respDoc;
+              if (deserializeJson(respDoc, response) == DeserializationError::Ok) {
+                bool allow = respDoc["allow"].as<bool>();
+                String userName = respDoc["user_name"] | "Unknown";
+                
+                if (allow) {
+                  // 授权通过，进入等待按钮确认状态
+                  Serial.printf("[BLE] 授权通过: %s\n", userName.c_str());
+                  
+                  if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(100))) {
+                    ble_status.waiting_confirm = true;
+                    ble_status.device_detected = true;
+                    ble_status.confirm_timeout = millis() + 10000;  // 10秒超时
+                    strncpy(ble_status.user_name, userName.c_str(), sizeof(ble_status.user_name) - 1);
+                    strncpy(ble_status.mac_address, event.data, sizeof(ble_status.mac_address) - 1);
+                    ble_status.detect_time = millis();
+                    xSemaphoreGive(ble_mutex);
+                  }
+                  
+                  playCardBeep();  // 播放提示音
+                  showPixel(0, 0, 180);  // 蓝色LED
+                } else {
+                  // 授权拒绝
+                  SystemEvent deny_event;
+                  deny_event.type = EVENT_BLE_PERMISSION_DENY;
+                  deny_event.timestamp = millis();
+                  xQueueSend(event_queue, &deny_event, 0);
+                }
+              }
+            }
+          }
+        }
+        break;
+      }
+      
+      case EVENT_BTN_CONFIRM: {
+        // 按钮确认开门
+        Serial.printf("[Event] 按钮确认，执行蓝牙开门: %s\n", event.data);
+        
+        // ✅ 添加设备到冷却期列表（3分钟内不再提示）
+        addToCooldown(event.data);
+        
+        // 发送开门事件
+        SystemEvent open_event;
+        open_event.type = EVENT_NFC_PERMISSION_OK;  // 复用开门逻辑
+        strcpy(open_event.data, "bluetooth");
+        open_event.timestamp = millis();
+        xQueueSend(event_queue, &open_event, 0);
+        
+        // 记录蓝牙开门日志到服务器
+        if (WiFi.status() == WL_CONNECTED) {
+          HTTPClient http;
+          String url = String("http://") + currentHost + ":" + String(SERVER_PORT) + "/api/hardware/bluetooth/access-log";
+          
+          if (http.begin(wifiClient, url)) {
+            StaticJsonDocument<256> doc;
+            doc["device_id"] = DEVICE_ID;
+            doc["bt_mac"] = String(event.data);
+            doc["access_type"] = "bluetooth";
+            doc["status"] = "success";
+            String body;
+            serializeJson(doc, body);
+            
+            http.addHeader("Content-Type", "application/json");
+            http.POST((uint8_t*)body.c_str(), body.length());
+            http.end();
+          }
+        }
+        
+        // 清除蓝牙状态
+        if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(100))) {
+          ble_status.device_detected = false;
+          xSemaphoreGive(ble_mutex);
+        }
+        break;
+      }
+      
+      case EVENT_BLE_PERMISSION_DENY: {
+        Serial.println("[Event] 蓝牙权限拒绝");
+        
+        // 播放拒绝音效
+        playDenySound();
+        showPixel(180, 0, 0);  // 红色
+        
+        // TFT显示拒绝信息
+        tft.fillScreen(ST77XX_BLACK);
+        tft.setTextSize(2);
+        tft.setTextColor(ST77XX_RED);
+        tft.setCursor(30, 100);
+        tft.println("BLE ACCESS");
+        tft.setCursor(50, 130);
+        tft.println("DENIED");
+        
+        delay(2000);
+        showPixel(0, 0, 0);
+        break;
+      }
+      
       case EVENT_NETWORK_ERROR: {
         Serial.println("[Event] 网络错误");
         showPixel(180, 90, 0);  // 橙色警告
@@ -896,6 +1593,8 @@ void setup() {
   // 创建 FreeRTOS 任务（双核）
   Serial.println("\n📌 创建 FreeRTOS 任务...");
   
+  // 注意：BLE初始化已移到bleScanner()线程内部（避免setup()栈溢出）
+  
   // Core 0 任务
   xTaskCreatePinnedToCore(
     nfcMonitor,           // 函数指针
@@ -917,11 +1616,31 @@ void setup() {
     0
   );
   
+  xTaskCreatePinnedToCore(
+    buttonMonitor,
+    "Button_Monitor",
+    4096,          // 增加栈大小到4KB
+    NULL,
+    4,             // 提高优先级到4（最高）
+    NULL,
+    1              // 移到Core 1
+  );
+  
   // Core 1 任务
   xTaskCreatePinnedToCore(
     networkPoller,
     "Network_Poller",
-    4096,
+    8192,  // 增加到8KB（从4KB），避免HTTP和JSON操作导致栈溢出
+    NULL,
+    2,
+    NULL,
+    1
+  );
+  
+  xTaskCreatePinnedToCore(
+    bleScanner,
+    "BLE_Scanner",
+    12288,  // 增加栈大小到12KB避免栈溢出
     NULL,
     2,
     NULL,
@@ -931,7 +1650,7 @@ void setup() {
   xTaskCreatePinnedToCore(
     heartbeatTask,
     "Heartbeat",
-    3072,
+    4096,  // 增加到4KB（从3KB），避免HTTP操作导致栈溢出
     NULL,
     1,
     NULL,
