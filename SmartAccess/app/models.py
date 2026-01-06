@@ -86,6 +86,7 @@ class NFCCard(Base):
     card_number = Column(String(50), unique=True, index=True, nullable=False)  # 卡号
     card_name = Column(String(100))  # 卡片名称
     door_id = Column(String(20), default="door1")  # 门编号：door1/door2
+    device_id = Column(String(50), nullable=True)  # 绑定的设备ID（如door_controller_2），为空则对所有设备有效
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -262,7 +263,8 @@ class HardwareDevice(Base):
     id = Column(Integer, primary_key=True, index=True)
     device_id = Column(String(50), unique=True, index=True, nullable=False)
     device_name = Column(String(100))
-    device_type = Column(String(50), index=True)  # nfc_reader, bluetooth_scanner, camera, door_lock
+    device_type = Column(String(50), index=True)  # door_controller, door_controller_nfc
+    device_mode = Column(String(50), default="remote_only")  # 设备模式: remote_only(门禁1), remote_nfc(门禁2)
     location = Column(String(100))
     is_active = Column(Boolean, default=True, index=True)
     last_heartbeat = Column(DateTime)

@@ -47,6 +47,9 @@
     <div class="status" id="cardStatus">选择用户后点击“开始录入”</div>
     <div style="display:flex; flex-wrap:wrap; gap:0.6rem; margin-top:0.6rem; align-items:center;">
       <select id="cardUser" style="flex:1 1 220px; padding:0.5rem;"></select>
+      <select id="deviceSelect" style="flex:0 0 150px; padding:0.5rem;">
+        <option value="">选择设备</option>
+      </select>
       <select id="doorSelect" style="flex:0 0 120px; padding:0.5rem;">
         <option value="door1">门1</option>
         <option value="door2">门2</option>
@@ -91,6 +94,8 @@
         const res = await fetch('/api/hardware/devices', { headers: authHeaders() });
         const data = await parseJsonSafe(res);
         if (!res.ok) throw new Error(data.detail || '加载设备失败');
+        const deviceSel = document.getElementById('deviceSelect');
+        deviceSel.innerHTML = '<option value="">选择设备</option>';
         const tbody = document.getElementById('tbody');
         tbody.innerHTML = '';
         if (!data.length) {
@@ -113,7 +118,19 @@
             </td>
           `;
           tbody.appendChild(tr);
+
+          // 只有支持 NFC 的设备才加入录入下拉
+          if (d.device_type?.includes('nfc') || d.device_mode === 'remote_nfc') {
+            const opt = document.createElement('option');
+            opt.value = d.device_id;
+            opt.textContent = d.device_name ? `${d.device_name} (${d.device_id})` : d.device_id;
+            deviceSel.appendChild(opt);
+          }
         });
+        // 如果有设备，默认选第一个
+        if (deviceSel.options.length > 1 && !deviceSel.value) {
+          deviceSel.selectedIndex = 1;
+        }
         setStatus('设备加载完成', true);
       } catch (e) {
         setStatus(e.message, false, true);
@@ -178,7 +195,9 @@
       const user_id = document.getElementById('cardUser').value;
       const card_name = document.getElementById('cardName').value.trim();
       const door_id = document.getElementById('doorSelect').value;
+      const device_id = document.getElementById('deviceSelect').value;
       if (!user_id) return setCardStatus('请选择用户', false, true);
+      if (!device_id) return setCardStatus('请选择支持NFC的设备', false, true);
       const btn = document.getElementById('btnEnroll');
       btn.disabled = true; setCardStatus('已下发 ENROLL，刷卡等待录入...', false, false);
       let taskId = null;
@@ -186,20 +205,39 @@
         // 下发 ENROLL 任务
         const res = await fetch('/api/hardware/nfc/command', {
           method:'POST', headers: authHeaders({ 'Content-Type':'application/json' }),
-          body: JSON.stringify({ device_id: 'nfc_reader_01', command:'ENROLL' })
+          body: JSON.stringify({ device_id, command:'ENROLL' })
         });
         const data = await parseJsonSafe(res);
         if (!res.ok) throw new Error(data.detail || '下发 ENROLL 失败');
         taskId = data.id;
-        // 轮询任务结果
+        
+        // 轮询任务结果（带超时机制）
+        const TIMEOUT_MS = 10000; // 10秒超时
+        const startTime = Date.now();
+        let pollCount = 0;
+        
         const pollStatus = async () => {
+          pollCount++;
+          const elapsed = Date.now() - startTime;
+          
+          // 检查超时
+          if (elapsed > TIMEOUT_MS) {
+            throw new Error(`读卡超时（${(TIMEOUT_MS/1000)}秒），请重试`);
+          }
+          
+          // 更新状态提示
+          const remaining = Math.ceil((TIMEOUT_MS - elapsed) / 1000);
+          setCardStatus(`等待读卡... 剩余 ${remaining} 秒`, false, false);
+          
           const r = await fetch(`/api/hardware/nfc/command/status/${taskId}`, { headers: authHeaders() });
           const d = await parseJsonSafe(r);
           if (!r.ok) throw new Error(d.detail || '查询任务失败');
           if (d.result) return d;
+          
           await new Promise(res => setTimeout(res, 1000));
           return pollStatus();
         };
+        
         const done = await pollStatus();
         // 解析 result 内容
         let card_uid = '';

@@ -293,12 +293,14 @@
                 return;
             }
             
-            // 筛选门禁相关设备
+            // 筛选门禁相关设备（支持所有门禁控制器类型）
             const doorDevices = data.filter(d => 
-                d.device_type === 'nfc_reader' || 
-                d.device_type === 'door_lock' ||
-                d.device_type === 'door_controller' ||
-                d.device_type === 'esp8266'
+              d.device_type === 'nfc_reader' || 
+              d.device_type === 'door_lock' ||
+              d.device_type === 'door_controller' ||
+              d.device_type === 'door_controller_nfc' ||
+              d.device_type === 'remote_door_controller' ||  // 新增：纯远程控制器
+              d.device_type === 'esp8266'
             );
             if (doorDevices.length === 0) {
                 document.getElementById('noDevices').style.display = 'block';
@@ -365,7 +367,10 @@
             'nfc_reader': 'NFC读卡器',
             'door_lock': '门锁控制器',
             'door_controller': '门禁控制器',
-            'camera': '摄像头'
+            'door_controller_nfc': '门禁控制器(NFC)',
+            'remote_door_controller': '远程门禁控制器',  // 新增
+            'camera': '摄像头',
+            'esp8266': 'ESP8266控制器'
         };
         return types[type] || type;
     }
@@ -406,8 +411,25 @@
     }
     // 页面加载时获取设备列表
     loadDevices();
-    // 每30秒自动刷新设备状态
-    setInterval(loadDevices, 30000);
+    
+    // 每10秒自动刷新设备状态（提高响应速度）
+    setInterval(loadDevices, 10000);
+    
+    // 监听页面可见性，切换回来时立即刷新
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) {
+            console.log('页面重新激活，刷新设备列表...');
+            loadDevices();
+        }
+    });
+    
+    // 监听其他页面的设备更新通知（跨标签页同步）
+    window.addEventListener('storage', function(e) {
+        if (e.key === 'deviceListUpdate' && e.newValue) {
+            console.log('检测到设备列表更新，立即刷新...');
+            loadDevices();
+        }
+    });
     </script>
   <script src="/static/js/common.js"></script>
   </body>

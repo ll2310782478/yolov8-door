@@ -354,7 +354,10 @@
                 await fetchJsonOk('/api/hardware/devices', {
                     method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(payload)
                 }, '创建设备');
-                setFormStatus('创建成功', true); loadDevices();
+                setFormStatus('创建成功', true); 
+                loadDevices();
+                // 通知其他页面设备列表已更新
+                localStorage.setItem('deviceListUpdate', Date.now().toString());
             } catch (e) { console.error('创建设备失败', e); setFormStatus(e.message, false, true); }
         }
         async function toggleDevice(device_id, enable) {
@@ -362,14 +365,20 @@
                 await fetchJsonOk(`/api/hardware/devices/${device_id}`, {
                     method:'PUT', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ is_active: enable })
                 }, '更新设备');
-                setStatus('更新成功', true); loadDevices();
+                setStatus('更新成功', true); 
+                loadDevices();
+                // 通知其他页面设备列表已更新
+                localStorage.setItem('deviceListUpdate', Date.now().toString());
             } catch (e) { console.error('更新设备失败', e); setStatus(e.message, false, true); }
         }
         async function deleteDevice(device_id) {
             if (!confirm('确定删除此设备？')) return;
             try {
                 await fetchJsonOk(`/api/hardware/devices/${device_id}`, { method:'DELETE', headers: authHeaders() }, '删除设备');
-                setStatus('删除成功', true); loadDevices();
+                setStatus('删除成功', true); 
+                loadDevices();
+                // 通知其他页面设备列表已更新
+                localStorage.setItem('deviceListUpdate', Date.now().toString());
             } catch (e) { console.error('删除设备失败', e); setStatus(e.message, false, true); }
         }
         function clearForm() {

@@ -1,156 +1,195 @@
 /*
- * ESP8266 智能门禁控制器 (v4.0 统一开门接口版)
+ * ESP8266 远程门禁控制器 (v5.0 纯远程控制版)
  * 功能特性：
- * 1. 远程开门 - 支持通过服务器指令控制
- * 2. 统一开门接口 - openDoor(doorId, source) 供所有模块调用
- * 3. NFC功能已禁用 - 可通过 ENABLE_NFC 重新启用
- * 4. 支持多模块触发 - 人脸识别、NFC、蓝牙、二维码等
+ * 1. 纯远程控制 - 仅通过服务器轮询指令控制
+ * 2. 双门控制 - 支持门1和门2独立控制
+ * 3. LED状态指示 - 使用板载LED显示设备状态
+ * 4. 自动心跳 - 定期向服务器报告在线状态
  * 
- * 更新日志 v4.0:
- * - 新增统一开门接口 openDoor()
- * - 禁用NFC扫描功能（保留代码）
- * - 优化远程开门轮询机制
+ * 更新日志 v5.0:
+ * - 移除所有NFC相关功能和库
+ * - 改为纯远程指令控制模式
+ * - 增强LED状态指示（WiFi连接/在线闪烁/开门常亮/错误快闪）
+ * - 简化代码结构，提升稳定性
  */
 
-#include <Wire.h>
-#include <SPI.h>
-#include <Adafruit_PN532.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
 
 // ==================== 1. 用户配置 ====================
 
-// 功能开关
-#define ENABLE_NFC false          // NFC功能开关（false=禁用，true=启用）
-
-const char* SSID        = "lll";           // WiFi名称
-const char* PASSWORD    = "12345678";      // WiFi密码
-const char* SERVER_HOST = "192.168.188.116"; // 电脑IP
-const int   SERVER_PORT = 8000;            // 端口
+const char* SSID        = "安居门业";           // WiFi名称
+const char* PASSWORD    = "15929256728";      // WiFi密码
+const char* SERVER_HOST = "192.168.1.45";     // 服务器IP
+const int   SERVER_PORT = 8000;               // 服务器端口
 
 // 设备身份信息
-const char* DEVICE_ID   = "nfc_reader_01";           // 设备唯一ID
-const char* DEVICE_NAME = "门禁控制器-01";            // 设备名称
-const char* DEVICE_TYPE = "door_controller";          // 设备类型
-const char* DEVICE_LOC  = "实验室大门";               // 安装位置
+const char* DEVICE_ID   = "remote_door_01";        // 设备唯一ID
+const char* DEVICE_NAME = "远程门禁-01";            // 设备名称
+const char* DEVICE_TYPE = "remote_door_controller"; // 设备类型
+const char* DEVICE_LOC  = "实验室大门";             // 安装位置
 
 // 硬件引脚
-#define PN532_SDA D2   // GPIO4
-#define PN532_SCL D1   // GPIO5
-#define PN532_IRQ D3   // GPIO0 (IRQ必须接这个!)
-#define PN532_RESET D0 // 没什么用，占位
-
-// 门锁引脚
-#define DOOR1_PIN D8
-#define DOOR2_PIN D7
-#define STATUS_LED D4  
-const bool LED_INVERTED = true; // 板载LED通常是低电平亮
+#define DOOR1_PIN D8      // 门1继电器
+#define DOOR2_PIN D7      // 门2继电器
+#define STATUS_LED D4     // 板载LED (GPIO2)
+const bool LED_INVERTED = true; // 板载LED低电平点亮
 
 // ==================== 2. 全局变量 ====================
 
-Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET, &Wire);
 WiFiClient client;
 
 // 门锁计时器
 unsigned long door1_close_time = 0; 
 unsigned long door2_close_time = 0;
 
-// NFC 状态机枚举
-enum NFCState {
-  NFC_IDLE,       // 空闲，准备发送扫描指令
-  NFC_WAITING,    // 已发送指令，正在等 IRQ 变低
-  NFC_COOLDOWN    // 刚读完卡，冷却一会防止连刷
+// LED状态枚举
+enum LedMode {
+  LED_OFF,           // 关闭
+  LED_ON,            // 常亮
+  LED_SLOW_BLINK,    // 慢闪 (1Hz, WiFi连接中)
+  LED_FAST_BLINK,    // 快闪 (5Hz, 网络错误)
+  LED_HEARTBEAT      // 心跳闪烁 (在线状态)
 };
-NFCState nfcState = NFC_IDLE;
-unsigned long nfc_timer = 0;
-String last_uid = "";
+LedMode ledMode = LED_SLOW_BLINK;
+unsigned long led_timer = 0;
+bool led_state = false;
 
 // 网络轮询计时器
 unsigned long last_poll_time = 0;
 
-// ==================== 3. 硬件控制 (异步) ====================
+// ==================== 3. LED控制系统 ====================
 
 void setLed(bool on) {
-  if (LED_INVERTED) digitalWrite(STATUS_LED, on ? LOW : HIGH);
-  else digitalWrite(STATUS_LED, on ? HIGH : LOW);
+  if (LED_INVERTED) {
+    digitalWrite(STATUS_LED, on ? LOW : HIGH);
+  } else {
+    digitalWrite(STATUS_LED, on ? HIGH : LOW);
+  }
+  led_state = on;
 }
 
-// ==================== 统一开门接口 ====================
+void ledTask() {
+  unsigned long now = millis();
+  
+  switch (ledMode) {
+    case LED_OFF:
+      if (led_state) setLed(false);
+      break;
+      
+    case LED_ON:
+      if (!led_state) setLed(true);
+      break;
+      
+    case LED_SLOW_BLINK:  // 500ms周期
+      if (now - led_timer > 500) {
+        led_timer = now;
+        setLed(!led_state);
+      }
+      break;
+      
+    case LED_FAST_BLINK:  // 100ms周期
+      if (now - led_timer > 100) {
+        led_timer = now;
+        setLed(!led_state);
+      }
+      break;
+      
+    case LED_HEARTBEAT:  // 心跳模式：短闪一下
+      if (now - led_timer > 2000) {
+        led_timer = now;
+        setLed(true);
+      } else if (now - led_timer > 100 && led_state) {
+        setLed(false);
+      }
+      break;
+  }
+}
+
+
+// ==================== 4. 统一开门接口 ====================
+
 /**
- * 统一开门接口 - 所有模块调用此接口开门
+ * 统一开门接口 - 远程指令调用此接口开门
  * @param doorId 门编号 (1=门1, 2=门2)
- * @param source 触发来源 ("remote"=远程, "face"=人脸, "nfc"=NFC卡, "bluetooth"=蓝牙, "qrcode"=二维码)
+ * @param source 触发来源 (remote/face/bluetooth/qrcode等)
  * @return bool 是否成功触发
  */
 bool openDoor(int doorId, String source) {
   // 参数验证
   if (doorId != 1 && doorId != 2) {
-    Serial.println("[Door] 错误: 无效的门编号 " + String(doorId));
+    Serial.println("[Door] ❌ 无效门编号: " + String(doorId));
     return false;
   }
+
+  // LED常亮表示开门中
+  ledMode = LED_ON;
 
   // 记录日志
   Serial.println("╔════════════════════════════════════╗");
   Serial.println("║     🔓 门禁开启                    ║");
   Serial.println("╠════════════════════════════════════╣");
-  Serial.print("║  门编号: "); Serial.println(doorId == 1 ? "门1 (前门)      ║" : "门2 (后门)      ║");
+  Serial.print("║  门编号: "); 
+  Serial.println(doorId == 1 ? "门1              ║" : "门2              ║");
   Serial.print("║  触发源: "); 
   if (source == "remote") Serial.println("远程指令        ║");
   else if (source == "face") Serial.println("人脸识别        ║");
-  else if (source == "nfc") Serial.println("NFC刷卡         ║");
   else if (source == "bluetooth") Serial.println("蓝牙开门        ║");
   else if (source == "qrcode") Serial.println("二维码扫描      ║");
-  else Serial.println(source + "                ║");
+  else Serial.println(source + "          ║");
   Serial.println("║  开锁时长: 3秒                     ║");
   Serial.println("╚════════════════════════════════════╝");
-
-  // 点亮状态灯
-  setLed(true);
 
   // 执行开门操作
   if (doorId == 1) {
     digitalWrite(DOOR1_PIN, HIGH);
     door1_close_time = millis() + 3000; // 3秒后自动关闭
-  } 
-  else if (doorId == 2) {
+  } else {
     digitalWrite(DOOR2_PIN, HIGH);
-    door2_close_time = millis() + 3000; // 3秒后自动关闭
+    door2_close_time = millis() + 3000;
   }
 
   return true;
 }
 
-// 兼容旧代码的包装函数（已废弃，建议使用 openDoor）
-void triggerDoor(int doorId) {
-  openDoor(doorId, "legacy");
-}
+// ==================== 5. 门锁自动关闭任务 ====================
 
-// 门卫任务：负责时间到了关门
 void doorTask() {
   unsigned long now = millis();
-  if (door1_close_time > 0 && now > door1_close_time) {
-    digitalWrite(DOOR1_PIN, LOW); door1_close_time = 0; setLed(false);
-    Serial.println("[Door] 门1 自动关闭");
+  
+  if (door1_close_time > 0 && now >= door1_close_time) {
+    digitalWrite(DOOR1_PIN, LOW);
+    door1_close_time = 0;
+    ledMode = LED_HEARTBEAT; // 恢复心跳模式
+    Serial.println("[Door] 🔒 门1 自动关闭");
   }
-  if (door2_close_time > 0 && now > door2_close_time) {
-    digitalWrite(DOOR2_PIN, LOW); door2_close_time = 0; setLed(false);
-    Serial.println("[Door] 门2 自动关闭");
+  
+  if (door2_close_time > 0 && now >= door2_close_time) {
+    digitalWrite(DOOR2_PIN, LOW);
+    door2_close_time = 0;
+    ledMode = LED_HEARTBEAT; // 恢复心跳模式
+    Serial.println("[Door] 🔒 门2 自动关闭");
   }
 }
 
-// ==================== 4. 网络通信 (健壮版) ====================
+
+// ==================== 6. 网络通信 ====================
 
 String sendRequest(String method, String path, String jsonBody) {
-  if (WiFi.status() != WL_CONNECTED) return "";
+  if (WiFi.status() != WL_CONNECTED) {
+    ledMode = LED_FAST_BLINK; // 网络断开快闪
+    return "";
+  }
   
-  // 确保连接干净
   client.stop();
   if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-    Serial.println("[NET] 连接失败");
+    Serial.println("[NET] ❌ 连接服务器失败");
+    ledMode = LED_FAST_BLINK;
     return "";
   }
 
+  // 发送HTTP请求
   client.print(method + " " + path + " HTTP/1.1\r\n");
   client.print("Host: " + String(SERVER_HOST) + "\r\n");
   client.print("Connection: close\r\n");
@@ -164,32 +203,55 @@ String sendRequest(String method, String path, String jsonBody) {
     client.print("\r\n");
   }
 
+  // 读取响应
   String response = "";
   unsigned long timeout = millis();
   while (client.connected() || client.available()) {
-    if (client.available()) response += (char)client.read();
+    if (client.available()) {
+      response += (char)client.read();
+    }
     if (millis() - timeout > 2000) break; // 2秒超时
   }
   client.stop();
+  
+  // 恢复在线心跳模式
+  if (ledMode == LED_FAST_BLINK) {
+    ledMode = LED_HEARTBEAT;
+  }
+  
   return response;
 }
 
 bool postJson(const String& path, const String& jsonBody) {
-  if (WiFi.status() != WL_CONNECTED) return false;
+  if (WiFi.status() != WL_CONNECTED) {
+    ledMode = LED_FAST_BLINK;
+    return false;
+  }
+  
   HTTPClient http;
   WiFiClient wifiClient;
   String url = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + path;
+  
   http.begin(wifiClient, url);
   if (jsonBody.length() > 0) {
     http.addHeader("Content-Type", "application/json");
   }
+  
   int code = jsonBody.length() > 0 ? http.POST(jsonBody) : http.POST((uint8_t*)nullptr, 0);
+  
   if (code > 0) {
     Serial.printf("[HTTP] %s -> %d\n", path.c_str(), code);
   } else {
     Serial.printf("[HTTP] %s 请求失败: %s\n", path.c_str(), http.errorToString(code).c_str());
+    ledMode = LED_FAST_BLINK;
   }
+  
   http.end();
+  
+  if (ledMode == LED_FAST_BLINK && code > 0) {
+    ledMode = LED_HEARTBEAT;
+  }
+  
   return code > 0 && code < 300;
 }
 
@@ -200,13 +262,14 @@ void registerDevice() {
   doc["device_type"] = DEVICE_TYPE;
   doc["location"] = DEVICE_LOC;
   doc["ip_address"] = WiFi.localIP().toString();
-  String body; serializeJson(doc, body);
+  String body; 
+  serializeJson(doc, body);
 
   bool ok = postJson("/api/hardware/devices", body);
   if (ok) {
-    Serial.println("[REG] 设备注册成功");
+    Serial.println("[REG] ✅ 设备注册成功");
   } else {
-    Serial.println("[REG] 设备注册可能已存在或失败，继续心跳...\n     如果已注册过可忽略此提示");
+    Serial.println("[REG] ⚠️  设备可能已注册或失败，继续运行...");
   }
 }
 
@@ -218,123 +281,56 @@ void heartbeatTask() {
   StaticJsonDocument<192> doc;
   doc["connection_status"] = "online";
   doc["ip_address"] = WiFi.localIP().toString();
-  doc["firmware_version"] = "v4.0";
-  String body; serializeJson(doc, body);
+  doc["firmware_version"] = "v5.0";
+  String body; 
+  serializeJson(doc, body);
 
   bool ok = postJson(String("/api/hardware/devices/") + DEVICE_ID + "/heartbeat", body);
   Serial.println(ok ? "💓 心跳: 成功" : "💔 心跳: 失败");
 }
 
-// ==================== 5. NFC扫描任务 (可选功能，已禁用) ====================
 
-void nfcTask() {
-  #if ENABLE_NFC  // 只有启用NFC时才编译此代码
-  
-  unsigned long now = millis();
-
-  switch (nfcState) {
-    
-    // --- 状态1: 准备扫描 ---
-    case NFC_IDLE:
-      nfcState = NFC_WAITING;
-      nfc_timer = now;
-      break;
-
-    // --- 状态2: 等待 IRQ 信号 ---
-    case NFC_WAITING:
-      if (digitalRead(PN532_IRQ) == LOW) {
-        Serial.println("[NFC] IRQ 触发！读取卡片数据...");
-        
-        uint8_t uid[] = {0,0,0,0,0,0,0};
-        uint8_t uidLen;
-        
-        if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100)) {
-          String current_uid = "";
-          for (uint8_t i = 0; i < uidLen; i++) {
-            if (i) current_uid += "-";
-            if (uid[i] < 0x10) current_uid += "0";
-            current_uid += String(uid[i], HEX);
-          }
-          current_uid.toUpperCase();
-          Serial.println("[NFC] 读到 UID: " + current_uid);
-
-          // 上报服务器
-          StaticJsonDocument<200> doc;
-          doc["device_id"] = DEVICE_ID;
-          doc["card_uid"] = current_uid;
-          String json; serializeJson(doc, json);
-          
-          String resp = sendRequest("POST", "/api/hardware/nfc-scan", json);
-          if (resp.indexOf("OPEN") != -1 || resp.indexOf("ALLOW") != -1) {
-             int doorId = (resp.indexOf("door2") != -1) ? 2 : 1;
-             openDoor(doorId, "nfc");  // 使用统一接口
-          }
-        }
-        
-        nfcState = NFC_COOLDOWN;
-        nfc_timer = millis();
-      } 
-      else {
-        if (now - nfc_timer > 5000) {
-           nfcState = NFC_IDLE; 
-        }
-      }
-      break;
-
-    // --- 状态3: 冷却防抖 ---
-    case NFC_COOLDOWN:
-      if (now - nfc_timer > 2000) {
-        nfcState = NFC_IDLE;
-      }
-      break;
-  }
-  
-  #endif  // ENABLE_NFC
-}
-
-// ==================== 6. 远程开门轮询任务 ====================
+// ==================== 7. 远程开门轮询任务 ====================
 
 void pollTask() {
-  if (millis() - last_poll_time > 2000) { // 2秒轮询一次
-    last_poll_time = millis();
-    
-    // 构造心跳包
-    StaticJsonDocument<64> doc;
-    doc["device_id"] = DEVICE_ID;
-    String json; serializeJson(doc, json);
+  if (millis() - last_poll_time < 2000) return; // 2秒轮询一次
+  last_poll_time = millis();
+  
+  // 构造轮询请求
+  StaticJsonDocument<64> doc;
+  doc["device_id"] = DEVICE_ID;
+  String json; 
+  serializeJson(doc, json);
 
-    // 发送轮询请求
-    String resp = sendRequest("POST", "/api/hardware/nfc/command/poll", json);
+  // 发送轮询请求
+  String resp = sendRequest("POST", "/api/hardware/nfc/command/poll", json);
+  
+  // 解析响应
+  if (resp.length() > 0 && resp.indexOf("OPEN") != -1) {
+    Serial.println("╔════════════════════════════════════╗");
+    Serial.println("║  📡 收到远程开门指令               ║");
+    Serial.println("╚════════════════════════════════════╝");
     
-    // 解析响应
-    if (resp.length() > 0) {
-      // 检查是否有开门指令
-      if (resp.indexOf("OPEN") != -1) {
-        Serial.println("╔════════════════════════════════════╗");
-        Serial.println("║  📡 收到远程开门指令               ║");
-        Serial.println("╚════════════════════════════════════╝");
-        
-        // 解析门编号
-        int doorId = 1;  // 默认门1
-        String source = "remote";  // 默认来源
-        
-        if (resp.indexOf("door2") != -1) {
-          doorId = 2;
-        }
-        
-        // 尝试解析触发来源（人脸/蓝牙/二维码等）
-        if (resp.indexOf("face") != -1) source = "face";
-        else if (resp.indexOf("bluetooth") != -1) source = "bluetooth";
-        else if (resp.indexOf("qrcode") != -1) source = "qrcode";
-        
-        // 调用统一开门接口
-        openDoor(doorId, source);
-      }
+    // 解析门编号
+    int doorId = 1;  // 默认门1
+    String source = "remote";  // 默认来源
+    
+    if (resp.indexOf("door2") != -1) {
+      doorId = 2;
     }
+    
+    // 解析触发来源
+    if (resp.indexOf("face") != -1) source = "face";
+    else if (resp.indexOf("bluetooth") != -1) source = "bluetooth";
+    else if (resp.indexOf("qrcode") != -1) source = "qrcode";
+    
+    // 调用开门接口
+    openDoor(doorId, source);
   }
 }
 
-// ==================== 7. 主程序 ====================
+
+// ==================== 8. 主程序 ====================
 
 void setup() {
   Serial.begin(115200);
@@ -342,11 +338,11 @@ void setup() {
   
   // 显示启动信息
   Serial.println("\n╔════════════════════════════════════════════╗");
-  Serial.println("║   ESP8266 智能门禁控制器 v4.0             ║");
+  Serial.println("║   ESP8266 远程门禁控制器 v5.0             ║");
   Serial.println("╠════════════════════════════════════════════╣");
-  Serial.println("║  功能: 远程开门 + 统一接口                ║");
-  Serial.print("║  NFC功能: ");
-  Serial.println(ENABLE_NFC ? "已启用                         ║" : "已禁用                         ║");
+  Serial.println("║  功能: 纯远程控制 + 双门独立              ║");
+  Serial.println("║  模式: 轮询式指令接收                     ║");
+  Serial.println("║  LED: 板载状态指示                        ║");
   Serial.println("╚════════════════════════════════════════════╝\n");
 
   // 初始化硬件引脚
@@ -357,96 +353,91 @@ void setup() {
   digitalWrite(DOOR2_PIN, LOW);
   setLed(false);
   
-  #if ENABLE_NFC
-  // 只在启用NFC时初始化PN532
-  pinMode(PN532_IRQ, INPUT_PULLUP);
-  Wire.begin(PN532_SDA, PN532_SCL);
-  nfc.begin();
-  
-  uint32_t ver = nfc.getFirmwareVersion();
-  if (!ver) {
-    Serial.println("⚠️  警告: 未找到 PN532 模块");
-  } else {
-    nfc.SAMConfig();
-    Serial.println("✅ PN532 初始化成功 (IRQ 模式)");
-  }
-  #else
-  Serial.println("ℹ️  NFC功能已禁用，跳过PN532初始化");
-  #endif
+  Serial.println("✅ 硬件初始化完成");
+  Serial.println("   门1继电器: D8 (GPIO15)");
+  Serial.println("   门2继电器: D7 (GPIO13)");
+  Serial.println("   状态LED: D4 (GPIO2, 板载)\n");
 
   // 连接WiFi
+  ledMode = LED_SLOW_BLINK; // 慢闪表示正在连接
   WiFi.mode(WIFI_STA);
   WiFi.begin(SSID, PASSWORD);
   Serial.print("🔌 正在连接WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500); Serial.print(".");
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
   }
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n❌ WiFi连接失败！进入快闪错误模式");
+    ledMode = LED_FAST_BLINK;
+    while(1) { ledTask(); delay(10); } // 停在错误模式
+  }
+  
   Serial.println("\n✅ WiFi已连接");
   Serial.println("📍 IP地址: " + WiFi.localIP().toString());
   Serial.println("🌐 服务器: " + String(SERVER_HOST) + ":" + String(SERVER_PORT));
+  
+  ledMode = LED_HEARTBEAT; // 切换到心跳模式
 
-  // 设备注册（已存在会返回失败，忽略即可）
+  // 设备注册
   registerDevice();
   
-  Serial.println("\n✨ 系统启动完成，等待指令...\n");
+  Serial.println("\n✨ 系统启动完成，等待远程指令...");
+  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  Serial.println("LED状态说明:");
+  Serial.println("  💙 慢闪 (1Hz)   - WiFi连接中");
+  Serial.println("  💚 心跳闪烁     - 在线待命");
+  Serial.println("  💛 常亮         - 开门中");
+  Serial.println("  ❤️ 快闪 (5Hz)   - 网络错误\n");
 }
 
 void loop() {
-  static unsigned long last_heartbeat = 0;
+  static unsigned long last_status = 0;
   
-  // 每30秒输出一次心跳日志
-  if (millis() - last_heartbeat > 30000) {
-    last_heartbeat = millis();
-    Serial.println("💓 系统运行正常 | 在线时长: " + String(millis()/1000) + "秒");
-    #if ENABLE_NFC
-    Serial.print("   NFC状态: ");
-    Serial.println(nfcState == NFC_IDLE ? "空闲" : (nfcState == NFC_WAITING ? "等待" : "冷却"));
-    #endif
+  // 每30秒输出运行状态
+  if (millis() - last_status > 30000) {
+    last_status = millis();
+    Serial.println("💓 系统运行正常 | 在线: " + String(millis()/1000) + "秒 | IP: " + WiFi.localIP().toString());
   }
   
-  // === 任务调度 ===
+  // === 核心任务调度 ===
   
-  #if ENABLE_NFC
-  // 1. NFC扫描任务 (仅在启用时运行)
-  nfcTask();
-  #endif
-
-  // 2. 远程开门轮询 (主要功能)
-  pollTask();
-
-  // 3. 心跳上报（含IP/固件版本）
-  heartbeatTask();
-
-  // 4. 门锁自动关闭管理
-  doorTask();
-
-  // 5. CPU休息
+  ledTask();         // LED状态控制
+  pollTask();        // 远程指令轮询
+  heartbeatTask();   // 心跳上报
+  doorTask();        // 门锁自动关闭
+  
   delay(10);
 }
 
 /*
- * ==================== API使用说明 ====================
+ * ==================== 使用说明 ====================
  * 
- * 统一开门接口:
- *   bool openDoor(int doorId, String source)
+ * 硬件连接:
+ *   - 门1继电器: D8 (GPIO15)
+ *   - 门2继电器: D7 (GPIO13)
+ *   - 状态LED: D4 (GPIO2, 板载)
  * 
- * 参数:
- *   doorId - 门编号 (1或2)
- *   source - 触发来源:
- *     "remote"    - 远程控制
- *     "face"      - 人脸识别
- *     "nfc"       - NFC刷卡
- *     "bluetooth" - 蓝牙开门
- *     "qrcode"    - 二维码扫描
+ * LED状态指示:
+ *   - 慢闪 (1Hz): WiFi连接中
+ *   - 心跳闪烁: 在线待命
+ *   - 常亮: 开门中 (3秒)
+ *   - 快闪 (5Hz): 网络错误
  * 
- * 使用示例:
- *   openDoor(1, "face");       // 人脸识别开门1
- *   openDoor(2, "remote");     // 远程开门2
- *   openDoor(1, "bluetooth");  // 蓝牙开门1
- * 
- * 服务器端调用示例:
+ * 服务器API:
  *   POST /api/hardware/nfc/command/poll
+ *   请求: {"device_id": "remote_door_01"}
  *   响应: {"command": "OPEN", "door": "door1", "source": "face"}
  * 
- * ====================================================
+ * 开门触发来源:
+ *   - remote: 远程手动控制
+ *   - face: 人脸识别
+ *   - bluetooth: 蓝牙开门
+ *   - qrcode: 二维码扫描
+ * 
+ * ================================================
  */

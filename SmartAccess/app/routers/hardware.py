@@ -22,7 +22,8 @@ router = APIRouter(
 class HardwareDeviceCreate(BaseModel):
     device_id: str
     device_name: str
-    device_type: str  # nfc_reader, bluetooth_scanner, camera, door_lock
+    device_type: str  # door_controller, door_controller_nfc
+    device_mode: str = "remote_only"  # remote_only(门禁1), remote_nfc(门禁2)
     location: Optional[str] = None
     ip_address: Optional[str] = None
     port: Optional[int] = None
@@ -30,6 +31,7 @@ class HardwareDeviceCreate(BaseModel):
 
 class HardwareDeviceUpdate(BaseModel):
     device_name: Optional[str] = None
+    device_mode: Optional[str] = None
     location: Optional[str] = None
     is_active: Optional[bool] = None
     ip_address: Optional[str] = None
@@ -47,6 +49,7 @@ class HardwareDeviceResponse(BaseModel):
     device_id: str
     device_name: str
     device_type: str
+    device_mode: Optional[str] = None
     location: Optional[str] = None
     is_active: bool
     last_heartbeat: Optional[datetime] = None
@@ -81,6 +84,7 @@ class NFCCardCreate(BaseModel):
     permission_end_date: Optional[datetime] = None
     max_daily_uses: int = 0
     door_id: str = "door1"  # door1 / door2
+    device_id: Optional[str] = None  # 绑定的设备ID，为空则对所有设备有效
 
 
 class NFCCardUpdate(BaseModel):
@@ -90,6 +94,7 @@ class NFCCardUpdate(BaseModel):
     max_daily_uses: Optional[int] = None
     time_periods: Optional[str] = None
     door_id: Optional[str] = None
+    device_id: Optional[str] = None  # 绑定的设备ID
 
 
 class NFCCardResponse(BaseModel):
@@ -98,6 +103,7 @@ class NFCCardResponse(BaseModel):
     card_number: str
     card_name: Optional[str] = None
     door_id: Optional[str] = None
+    device_id: Optional[str] = None
     is_active: bool
     created_at: datetime
     permission_start_date: datetime
@@ -178,6 +184,7 @@ def create_device(device: HardwareDeviceCreate, db: Session = Depends(get_db)):
         device_id=device.device_id,
         device_name=device.device_name,
         device_type=device.device_type,
+        device_mode=device.device_mode,
         location=device.location,
         ip_address=device.ip_address,
         port=device.port,
@@ -201,6 +208,8 @@ def update_device(device_id: str, device_update: HardwareDeviceUpdate, db: Sessi
     
     if device_update.device_name:
         db_device.device_name = device_update.device_name
+    if device_update.device_mode:
+        db_device.device_mode = device_update.device_mode
     if device_update.location:
         db_device.location = device_update.location
     if device_update.is_active is not None:
@@ -281,6 +290,7 @@ def create_nfc_card(card: NFCCardCreate, db: Session = Depends(get_db)):
         card_number=card.card_number,
         card_name=card.card_name,
         door_id=card.door_id,
+        device_id=card.device_id,
         permission_start_date=datetime.utcnow(),
         permission_end_date=card.permission_end_date,
         max_daily_uses=card.max_daily_uses,
@@ -320,7 +330,7 @@ def get_nfc_card(card_id: int, db: Session = Depends(get_db)):
 
 @router.put("/nfc/card/{card_id}", response_model=NFCCardResponse)
 def update_nfc_card(card_id: int, card_update: NFCCardUpdate, db: Session = Depends(get_db)):
-    """更新 NFC 卡片信息（权限、时效等）"""
+    """更新 NFC 卡片信息（权限、时效、设备绑定等）"""
     card = db.query(NFCCard).filter(NFCCard.id == card_id).first()
     if not card:
         raise HTTPException(status_code=404, detail="卡片不存在")
@@ -337,6 +347,8 @@ def update_nfc_card(card_id: int, card_update: NFCCardUpdate, db: Session = Depe
         card.time_periods = card_update.time_periods
     if card_update.door_id:
         card.door_id = card_update.door_id
+    if card_update.device_id is not None:
+        card.device_id = card_update.device_id
     
     db.commit()
     db.refresh(card)
@@ -430,19 +442,55 @@ class NFCScanRequest(BaseModel):
 
 
 @router.post("/nfc-scan")
-def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db)):
-    """供设备（ESP8266）上报读取到的卡号。返回 action: OPEN/DENY 和 message。
+@router.get("/nfc-scan")
+def nfc_scan(
+    card_uid: Optional[str] = Query(None),
+    device_id: Optional[str] = Query(None),
+    req: Optional[NFCScanRequest] = None,
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """供设备上报读取到的卡号。返回 action: OPEN/DENY 和 message。
 
-    设备会 POST JSON {"card_uid":"AA-BB-CC-...","device_id":"nfc_reader_01"}
+    支持两种调用方式:
+    1. POST JSON: {"card_uid":"AA-BB-CC-...","device_id":"door_controller_2"}
+    2. GET Query: ?card_uid=AA-BB-CC-...&device_id=door_controller_2
     """
-    card_uid = req.card_uid.strip().upper()
-    device_id = req.device_id or request.client.host
+    # 从POST或GET获取参数
+    if req:
+        card_uid = req.card_uid
+        device_id = req.device_id or request.client.host
+    else:
+        device_id = device_id or request.client.host if request else None
+
+    if not card_uid:
+        return {"action": "DENY", "msg": "卡号不能为空"}
+
+    card_uid = card_uid.strip().upper()
+
+    # 检查设备是否存在及其模式
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device_id
+    ).first()
+
+    if not device:
+        return {"action": "DENY", "msg": "设备不存在"}
 
     # 检查是否存在未完成的 NFCTask（最近 30 秒内）并将结果挂到任务上
     task = db.query(NFCTask).filter(
         NFCTask.device_id == device_id,
         NFCTask.status.in_(["pending", "sent"])
     ).order_by(NFCTask.created_at.desc()).first()
+
+    # 检查设备是否支持NFC：兼容旧数据，device_mode为空但 device_type 含 nfc 也视为支持
+    supports_nfc = (device.device_mode == "remote_nfc") or (device.device_type and "nfc" in device.device_type)
+    if not supports_nfc:
+        if task:
+            task.status = "done"
+            task.result = f'{{"card_uid":"{card_uid}","status":"unsupported_device"}}'
+            task.consumed_at = datetime.utcnow()
+            db.commit()
+        return {"action": "DENY", "msg": "此设备不支持NFC功能"}
 
     # 查找卡片
     card = db.query(NFCCard).filter(NFCCard.card_number == card_uid).first()
@@ -464,6 +512,23 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         db.commit()
         return {"action": "DENY", "msg": "未知卡片"}
 
+    # 检查卡片是否绑定到此设备（device_id不为空时）
+    if card.device_id and card.device_id != device_id:
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type="nfc",
+            status="denied",
+            device_id=device_id,
+            details=f"Card not assigned to this device (bound to {card.device_id})"
+        )
+        db.add(access_log)
+        if task:
+            task.status = "done"
+            task.result = f'{{"card_uid":"{card_uid}","status":"device_mismatch"}}'
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {"action": "DENY", "msg": "卡片未授权给此设备"}
+
     # 校验卡片是否启用/时效等
     if not card.is_active:
         access_log = AccessLog(
@@ -476,7 +541,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         db.add(access_log)
         if task:
             task.status = "done"
-            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"disabled\"}}"
+            task.result = f'{{"card_uid":"{card_uid}","status":"disabled"}}'
             task.consumed_at = datetime.utcnow()
         db.commit()
         return {"action": "DENY", "msg": "卡片已被禁用"}
@@ -492,7 +557,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         db.add(access_log)
         if task:
             task.status = "done"
-            task.result = f"{{\"card_uid\":\"{card_uid}\",\"status\":\"expired\"}}"
+            task.result = f'{{"card_uid":"{card_uid}","status":"expired"}}'
             task.consumed_at = datetime.utcnow()
         db.commit()
         return {"action": "DENY", "msg": "卡片权限已过期"}

@@ -1,6 +1,7 @@
 """应用启动入口"""
 
 import os
+import socket
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -11,6 +12,14 @@ from dotenv import load_dotenv
 from app.database import engine, Base, get_db, init_db
 from app.models import User, Role, UserPermission
 from app.routers import users, hardware, visitors, face_recognition, auth, web
+
+# mDNS服务注册（用于硬件设备自动发现服务器）
+try:
+    from zeroconf import ServiceInfo, Zeroconf
+    MDNS_AVAILABLE = True
+except ImportError:
+    MDNS_AVAILABLE = False
+    print("⚠️  zeroconf未安装，mDNS功能不可用。安装: pip install zeroconf")
 
 # 加载环境变量
 load_dotenv()
@@ -68,6 +77,52 @@ def startup_event():
     print("📖 API 文档: http://localhost:8000/docs")
     print("🔗 数据库: " + os.getenv("DATABASE_URL", "sqlite:///./smartaccess.db"))
     print("⚠️  首次运行时，请访问 /api/docs 查看 API 文档并创建用户")
+    
+    # 注册mDNS服务，让硬件设备自动发现服务器
+    if MDNS_AVAILABLE:
+        try:
+            # 获取本机IP地址
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            
+            # 创建Zeroconf实例
+            zeroconf = Zeroconf()
+            
+            # 注册HTTP服务
+            service_info = ServiceInfo(
+                "_http._tcp.local.",
+                "SmartAccess._http._tcp.local.",
+                addresses=[socket.inet_aton(local_ip)],
+                port=8000,
+                properties={'path': '/api/'},
+                server="smartaccess.local.",
+            )
+            
+            zeroconf.register_service(service_info)
+            
+            print(f"🌐 mDNS服务已注册: smartaccess.local -> {local_ip}:8000")
+            print(f"💡 硬件设备可使用域名 'smartaccess.local' 自动连接")
+            
+            # 保存实例供后续使用
+            app.state.zeroconf = zeroconf
+            app.state.service_info = service_info
+        except Exception as e:
+            print(f"⚠️  mDNS注册失败: {e}")
+    else:
+        print("⚠️  mDNS不可用，硬件设备需手动配置服务器IP")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """应用关闭事件"""
+    # 注销mDNS服务
+    if MDNS_AVAILABLE and hasattr(app.state, 'zeroconf'):
+        try:
+            app.state.zeroconf.unregister_service(app.state.service_info)
+            app.state.zeroconf.close()
+            print("🌐 mDNS服务已注销")
+        except Exception as e:
+            print(f"⚠️  mDNS注销失败: {e}")
 
 
 if __name__ == "__main__":

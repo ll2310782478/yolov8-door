@@ -17,6 +17,9 @@ emails==0.6.0
 requests==2.31.0
 yagmail==0.15.293
 
+# mDNS 自动发现服务（用于硬件设备自动连接）
+zeroconf>=0.131.0
+
 # 人脸识别依赖
 ultralytics==8.0.236
 insightface==0.7.3
