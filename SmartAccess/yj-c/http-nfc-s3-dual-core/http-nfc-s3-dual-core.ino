@@ -52,12 +52,17 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <BLEUUID.h>
+#include <BLEServer.h>
+#include <BLECharacteristic.h>
+#include <BLESecurity.h>
+#include <Preferences.h>  // NVS存储
 
 // ==================== 1. 用户配置 ====================
 
 const char* SSID        = "安居门业";
 const char* PASSWORD    = "15929256728";
-const char* SERVER_HOST = "192.168.1.45";
+const char* SERVER_HOST = "192.168.1.51";
 const int   SERVER_PORT = 8000;
 const char* FALLBACK_HOST = "";
 
@@ -70,30 +75,31 @@ const char* DEVICE_MODE = "remote_nfc";
 // ==================== 2. 硬件引脚配置 ====================
 
 // I2C (NFC)
-#define PN532_SDA 8
-#define PN532_SCL 9
+// I2C (NFC)
+#define PN532_SDA 5
+#define PN532_SCL 4
 #define PN532_IRQ 6
 #define PN532_RESET -1
 
-// SPI (屏幕 + 喇叭)
-#define SPI_MOSI 11
-#define SPI_MISO 13
-#define SPI_CLK  12
+// SPI (屏幕)
+#define SPI_MOSI 10
+#define SPI_MISO -1
+#define SPI_CLK  9
 
 // ST7789 屏幕
-#define TFT_CS   10
-#define TFT_DC   7
-#define TFT_RST  -1
-#define TFT_BL   46
+#define TFT_CS   13
+#define TFT_DC   12
+#define TFT_RST  11
+#define TFT_BL   14
 
 // MAX98357 喇叭 (I2S)
-#define I2S_BCLK 37
-#define I2S_LRCK 35
-#define I2S_DOUT 36
+#define I2S_BCLK 15
+#define I2S_LRCK 7
+#define I2S_DOUT 16
 
 // 门锁继电器
-#define DOOR1_PIN 18
-#define DOOR2_PIN 17
+#define DOOR1_PIN 1
+#define DOOR2_PIN 2
 
 // RGB LED
 #define RGB_PIN 48
@@ -102,7 +108,7 @@ const char* DEVICE_MODE = "remote_nfc";
 // 确认按钮 (外部按钮，GPIO3 - RX引脚)
 // 连接方式: 按钮一端接 GPIO3，另一端接 GND
 // 配置: INPUT_PULLUP（内部上拉，按下时为LOW）
-#define CONFIRM_BTN_PIN 3
+#define CONFIRM_BTN_PIN 21
 
 // ==================== 3. 全局数据结构 ====================
 
@@ -148,11 +154,29 @@ struct BLEDeviceStatus {
   bool device_detected;       // 是否检测到授权设备
   char mac_address[18];       // MAC地址
   char user_name[32];         // 用户名
+  char device_irk[33];        // 设备IRK（16字节十六进制+\0）
   int rssi;                   // 信号强度
   unsigned long detect_time;  // 检测到的时间
   bool waiting_confirm;       // 等待按钮确认
   unsigned long confirm_timeout; // 确认超时时间
 };
+
+// 蓝牙配对记录（NVS存储）
+struct BLEPairingInfo {
+  char device_irk[33];        // 16字节十六进制
+  char device_ltk[33];        // 16字节十六进制
+  char device_name[100];      // 设备名称
+  unsigned long pairing_time; // 配对时间戳
+};
+
+// 配对模式状态
+struct PairingModeStatus {
+  bool active;                // 是否在配对模式
+  unsigned long start_time;   // 配对模式开始时间
+  unsigned long TIMEOUT;      // 超时时长（可动态设置）
+};
+
+PairingModeStatus pairing_mode = {false, 0, 30000};  // 默认30秒
 
 // ==================== 4. 互斥锁和队列 ====================
 
@@ -273,6 +297,77 @@ static const i2s_pin_config_t i2s_pins = {
   .data_in_num = I2S_PIN_NO_CHANGE
 };
 
+// ==================== BLE 配对管理函数 ====================
+
+// 初始化NVS（非易失存储）
+void initNVS() {
+  Preferences preferences;
+  if (!preferences.begin("ble_pairing", false)) {
+    Serial.println("[BLE] NVS初始化失败");
+  } else {
+    Serial.println("[BLE] NVS初始化成功");
+    preferences.end();
+  }
+}
+
+// 保存配对信息到NVS
+void savePairingInfo(const char* device_irk, const char* device_ltk, const char* device_name) {
+  Preferences preferences;
+  preferences.begin("ble_pairing", false);
+  
+  // 使用IRK作为key存储配对信息
+  String key = "irk_" + String(device_irk);
+  DynamicJsonDocument doc(256);
+  doc["irk"] = device_irk;
+  doc["ltk"] = device_ltk;
+  doc["name"] = device_name;
+  doc["time"] = millis();
+  
+  String json;
+  serializeJson(doc, json);
+  preferences.putString(key.c_str(), json);
+  
+  Serial.printf("[BLE] 配对信息已保存: %s\n", device_irk);
+  preferences.end();
+}
+
+// 从NVS读取配对信息
+bool loadPairingInfo(const char* device_irk, BLEPairingInfo* info) {
+  Preferences preferences;
+  preferences.begin("ble_pairing", true);  // 只读模式
+  
+  String key = "irk_" + String(device_irk);
+  String json = preferences.getString(key.c_str(), "");
+  preferences.end();
+  
+  if (json.length() == 0) {
+    return false;  // 配对记录不存在
+  }
+  
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, json) == DeserializationError::Ok) {
+    strncpy(info->device_irk, doc["irk"].as<const char*>(), 32);
+    strncpy(info->device_ltk, doc["ltk"].as<const char*>(), 32);
+    strncpy(info->device_name, doc["name"].as<const char*>(), 99);
+    info->pairing_time = doc["time"].as<unsigned long>();
+    return true;
+  }
+  
+  return false;
+}
+
+// 删除配对信息
+void removePairingInfo(const char* device_irk) {
+  Preferences preferences;
+  preferences.begin("ble_pairing", false);
+  
+  String key = "irk_" + String(device_irk);
+  preferences.remove(key.c_str());
+  
+  Serial.printf("[BLE] 配对信息已删除: %s\n", device_irk);
+  preferences.end();
+}
+
 // ==================== 6. 硬件控制函数 ====================
 
 void initHardware() {
@@ -285,6 +380,7 @@ void initHardware() {
   pixels.show();
   
   // 初始化 TFT 显示屏
+  SPI.begin(SPI_CLK, SPI_MISO, SPI_MOSI);
   if (TFT_BL >= 0) {
     pinMode(TFT_BL, OUTPUT);
     digitalWrite(TFT_BL, HIGH);  // 打开背光
@@ -338,7 +434,7 @@ void initHardware() {
     Serial.println("   ❌ 未发现任何 I2C 设备！");
     Serial.println("   ⚠️  请检查：");
     Serial.println("      1. PN532 模块是否接通电源？");
-    Serial.println("      2. I2C 引脚连接是否正确？(SDA=8, SCL=9)");
+    Serial.println("      2. I2C 引脚连接是否正确？(SDA=5, SCL=4)");
     Serial.println("      3. PN532 模式拨码开关是否设置为 I2C？");
     Serial.println("      4. 是否有上拉电阻？(通常模块自带)");
   } else {
@@ -372,9 +468,9 @@ void initHardware() {
   // 初始化事件队列（最多 10 个事件待处理）
   event_queue = xQueueCreate(10, sizeof(SystemEvent));
   
-  // 初始化确认按钮（板载BOOT按钮）
+  // 初始化确认按钮（上拉输入）
   pinMode(CONFIRM_BTN_PIN, INPUT_PULLUP);  // 启用上拉电阻
-  Serial.println("🔘 确认按钮初始化完成 (GPIO0 - BOOT按钮, 上拉电阻已启用)");
+  Serial.println("🔘 确认按钮初始化完成 (GPIO21, 上拉电阻已启用)");
   
   // 初始化 I2S 音频 (MAX98357A)
   i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
@@ -465,10 +561,32 @@ void playErrorSound() {
   }
 }
 
-// ==================== BLE 蓝牙扫描功能 ====================
+// 成功提示音
+void playSuccessSound() {
+  playTone(1000, 100);
+  delay(50);
+  playTone(1200, 100);
+  delay(50);
+  playTone(1500, 200);
+}
+
+// 显示空闲屏幕
+void displayIdleScreen() {
+  tft.setCursor(20, 100);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(2);
+  tft.println("Ready");
+}
+
+// ==================== BLE 蓝牙扫描与配对功能 ====================
 
 // BLE 扫描对象
 BLEScan* pBLEScan = nullptr;
+
+// BLE 配对外设对象
+BLEServer* pBLEServer = nullptr;
+BLEAdvertising* pBLEAdvertising = nullptr;
+bool ble_advertising = false;  // 是否正在广播
 
 // BLE 扫描结果缓存（最多10个设备）
 struct BLEScanResult {
@@ -542,6 +660,204 @@ void initBLE() {
   pBLEScan->setInterval(100);
   pBLEScan->setWindow(99);
   Serial.println("✅ BLE 初始化完成");
+}
+
+// ==================== BLE 配对外设模式 ====================
+
+// BLE 安全回调类（处理配对请求）
+class MySecurityCallbacks : public BLESecurityCallbacks {
+  uint32_t onPassKeyRequest() {
+    Serial.println("[BLE] 配对请求：输入密码 123456");
+    return 123456;  // 固定密码
+  }
+  
+  void onPassKeyNotify(uint32_t pass_key) {
+    Serial.printf("[BLE] 配对密码: %06d (请在手机上确认)\n", pass_key);
+  }
+  
+  bool onConfirmPIN(uint32_t pass_key) {
+    Serial.printf("[BLE] 数字比对验证: %06d\n", pass_key);
+    return true;  // 自动确认
+  }
+  
+  bool onSecurityRequest() {
+    Serial.println("[BLE] 收到安全配对请求");
+    return true;  // 接受配对
+  }
+};
+
+// BLE Server回调（处理连接/断开）
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    Serial.println("[BLE] 设备已连接");
+  }
+  
+  void onDisconnect(BLEServer* pServer) {
+    Serial.println("[BLE] 设备已断开");
+    // 断开后重新开始广播（如果还在配对窗口内）
+    if (pairing_mode.active && millis() - pairing_mode.start_time < pairing_mode.TIMEOUT) {
+      pServer->startAdvertising();
+      Serial.println("[BLE] 重新开始广播");
+    }
+  }
+};
+
+// 初始化BLE外设模式（配对用）
+void initBLEServer() {
+  if (pBLEServer != nullptr) {
+    Serial.println("[BLE] Server已存在，跳过初始化");
+    return;
+  }
+  
+  Serial.println("[BLE] 初始化BLE Server...");
+  
+  // 创建BLE Server
+  pBLEServer = BLEDevice::createServer();
+  pBLEServer->setCallbacks(new MyServerCallbacks());
+  Serial.println("[BLE] Server创建成功");
+  
+  // 创建自定义服务（0xFFFF为自定义UUID）
+  BLEService *pService = pBLEServer->createService(BLEUUID((uint16_t)0xFFFF));
+  
+  // 添加特征值（可选，但有助于广播）
+  BLECharacteristic *pChar = pService->createCharacteristic(
+    BLEUUID((uint16_t)0xFFF1),
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pChar->setValue("SmartDoor-BT");
+  pService->start();
+  Serial.println("[BLE] 服务和特征值创建成功");
+  
+  // 获取广播对象
+  pBLEAdvertising = BLEDevice::getAdvertising();
+  
+  // 配置广播数据 - 包含完整的设备发现信息
+  BLEAdvertisementData oAdvertisementData = BLEAdvertisementData();
+  oAdvertisementData.setFlags(0x06);  // LE General Discoverable, BR/EDR Not Supported
+  oAdvertisementData.setCompleteServices(BLEUUID((uint16_t)0xFFFF));
+  
+  // *** 关键修复：直接设置广播数据 ***
+  pBLEAdvertising->setAdvertisementData(oAdvertisementData);
+  
+  // 配置扫描应答（包含设备名称）
+  BLEAdvertisementData scanResponseData = BLEAdvertisementData();
+  scanResponseData.setShortName("SmartDoor");  // 扫描应答中包含名称
+  pBLEAdvertising->setScanResponseData(scanResponseData);
+  
+  // 启用扫描应答
+  pBLEAdvertising->setScanResponse(true);
+  
+  // 设置广播间隔和功率
+  pBLEAdvertising->setMinPreferred(0x06);    // 6.25ms
+  pBLEAdvertising->setMaxPreferred(0x12);    // 18.75ms
+  
+  Serial.println("[BLE] 广播参数配置完成");
+  
+  // 配置安全参数（启用配对）
+  BLESecurity *pSecurity = new BLESecurity();
+  pSecurity->setCapability(ESP_IO_CAP_OUT);
+  pSecurity->setKeySize(16);
+  pSecurity->setAuthenticationMode(ESP_LE_AUTH_BOND);
+  
+  // 设置安全回调
+  BLEDevice::setSecurityCallbacks(new MySecurityCallbacks());
+  
+  Serial.println("✅ [BLE] Server初始化完成");
+}
+
+// 开始BLE广播（进入配对模式）
+void startBLEPairing(unsigned long timeout_ms) {
+  Serial.println("\n========== BLE配对流程开始 ==========");
+  Serial.printf("目标超时时间: %lu ms (%lu 秒)\n", timeout_ms, timeout_ms / 1000);
+  
+  // 如果已在广播，先停止
+  if (ble_advertising) {
+    Serial.println("[BLE] 停止已运行的广播...");
+    pBLEAdvertising->stop();
+    ble_advertising = false;
+    delay(300);
+  }
+  
+  // 停止扫描（避免冲突）
+  if (pBLEScan != nullptr && pBLEScan->isScanning()) {
+    pBLEScan->stop();
+    Serial.println("[BLE] ✓ 已停止BLE扫描");
+    delay(500);  // 等待扫描完全停止
+  }
+  
+  // 初始化Server（如果未初始化）
+  if (pBLEServer == nullptr) {
+    Serial.println("[BLE] 初始化BLE Server...");
+    initBLEServer();
+    delay(500);
+  }
+  
+  // 检查广播对象
+  if (pBLEAdvertising == nullptr) {
+    Serial.println("❌ [BLE] 错误：广播对象为空！");
+    return;
+  }
+  
+  // 再次确保BLE设备已初始化
+  if (pBLEServer == nullptr) {
+    Serial.println("❌ [BLE] 错误：BLE Server未初始化！");
+    return;
+  }
+  
+  // 开始广播
+  Serial.println("[BLE] 启动BLE广播...");
+  pBLEAdvertising->start();
+  delay(200);  // 等待广播启动
+  
+  ble_advertising = true;
+  pairing_mode.active = true;
+  pairing_mode.start_time = millis();
+  pairing_mode.TIMEOUT = timeout_ms;
+  
+  Serial.printf("✅ [BLE] 广播已启动\n");
+  Serial.printf("📡 [BLE] 设备名称: SmartDoor-BT\n");
+  Serial.printf("⏱️  [BLE] 配对窗口: %lu 秒\n", timeout_ms / 1000);
+  Serial.println("========== BLE配对流程完成 ==========\n");
+  
+  // 立即诊断
+  diagnoseBLE();
+  
+  // 屏幕提示
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setCursor(10, 60);
+  tft.setTextColor(ST77XX_CYAN);
+  tft.setTextSize(2);
+  tft.println("BLE Pairing");
+  tft.setCursor(10, 100);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(1);
+  tft.printf("Device: SmartDoor-BT\n");
+  tft.printf("Time: %lu sec\n", timeout_ms / 1000);
+  tft.setCursor(10, 150);
+  tft.println("Open Bluetooth on");
+  tft.println("your phone now");
+  
+  playTone(800, 200);  // 提示音
+}
+
+// 停止BLE广播（退出配对模式）
+void stopBLEPairing() {
+  if (pBLEAdvertising != nullptr && ble_advertising) {
+    pBLEAdvertising->stop();
+    ble_advertising = false;
+    pairing_mode.active = false;
+    Serial.println("🔴 [BLE] 停止广播，退出配对模式");
+    
+    // 恢复扫描
+    if (pBLEScan != nullptr) {
+      pBLEScan->start(0, false);  // 持续扫描
+      Serial.println("[BLE] 恢复扫描模式");
+    }
+    
+    // 清空屏幕
+    tft.fillScreen(ST77XX_BLACK);
+    displayIdleScreen();
+  }
 }
 
 // 更新授权蓝牙设备白名单
@@ -932,14 +1248,34 @@ void doorController(void *parameter) {
 /**
  * 核心 1：远程开门轮询（可能阻塞 1-3 秒，不影响 NFC）
  */
+
+// BLE诊断函数
+void diagnoseBLE() {
+  Serial.println("\n========== BLE诊断信息 ==========");
+  Serial.printf("BLE广播状态: %s\n", ble_advertising ? "运行中" : "停止");
+  Serial.printf("配对模式: %s\n", pairing_mode.active ? "激活" : "关闭");
+  Serial.printf("BLE Server对象: %s\n", pBLEServer != nullptr ? "已创建" : "未创建");
+  Serial.printf("BLE广播对象: %s\n", pBLEAdvertising != nullptr ? "已创建" : "未创建");
+  Serial.printf("BLE扫描对象: %s\n", pBLEScan != nullptr ? "已创建" : "未创建");
+  Serial.println("==================================\n");
+}
+
 void networkPoller(void *parameter) {
   Serial.println("[Core1] 网络轮询线程已启动");
   
   unsigned long last_poll_time = 0;
+  unsigned long last_diag_time = 0;
   const unsigned long POLL_INTERVAL = 2000;  // 2秒轮询一次
+  const unsigned long DIAG_INTERVAL = 30000; // 每30秒诊断一次BLE状态
   
   while (true) {
     unsigned long now = millis();
+    
+    // 定期诊断BLE状态
+    if (now - last_diag_time > DIAG_INTERVAL && ble_advertising) {
+      last_diag_time = now;
+      diagnoseBLE();
+    }
     
     if (now - last_poll_time > POLL_INTERVAL) {
       last_poll_time = now;
@@ -991,6 +1327,36 @@ void networkPoller(void *parameter) {
                   xSemaphoreGive(nfc_mutex);
                 }
               }
+              else if (command == "BLE_PAIRING_START") {
+                // 启动 BLE 配对模式窗口（仅设置状态标志，具体广播/配对在 BLE 子系统中处理）
+                unsigned long timeoutMs = 30000;
+                if (doc.containsKey("payload")) {
+                  JsonVariant payload = doc["payload"];
+                  if (payload.is<const char*>()) {
+                    // 负载可能是字符串，需要再反序列化
+                    DynamicJsonDocument pdoc(256);
+                    if (deserializeJson(pdoc, payload.as<const char*>()) == DeserializationError::Ok) {
+                      if (pdoc.containsKey("timeout_seconds")) {
+                        timeoutMs = (unsigned long)(pdoc["timeout_seconds"].as<int>() * 1000UL);
+                      }
+                    }
+                  } else if (payload.is<JsonObject>()) {
+                    JsonObject p = payload.as<JsonObject>();
+                    if (p.containsKey("timeout_seconds")) {
+                      timeoutMs = (unsigned long)(p["timeout_seconds"].as<int>() * 1000UL);
+                    }
+                  }
+                }
+                
+                // 设置超时时长
+                pairing_mode.TIMEOUT = timeoutMs;
+                pairing_mode.active = true;
+                pairing_mode.start_time = millis();
+                Serial.printf("[BLE] 进入配对模式窗口，持续 %lu ms\n", timeoutMs);
+                
+                // 🔥 启动BLE外设广播，触发手机配对弹窗
+                startBLEPairing(timeoutMs);
+              }
             }
           }
         } else {
@@ -999,6 +1365,16 @@ void networkPoller(void *parameter) {
         }
       } else {
         Serial.println("[Network] 轮询请求失败，无法连接到服务器");
+      }
+    }
+    
+    // 检查配对模式超时
+    if (pairing_mode.active) {
+      unsigned long now = millis();
+      if (now - pairing_mode.start_time > pairing_mode.TIMEOUT) {
+        Serial.println("[BLE] 配对模式超时，自动关闭");
+        stopBLEPairing();
+        playErrorSound();  // 播放超时提示音
       }
     }
     
@@ -1080,6 +1456,16 @@ void bleScanner(void *parameter) {
             device["mac"] = temp_results[i].mac;
             device["rssi"] = temp_results[i].rssi;
             device["name"] = String(temp_results[i].name);
+            
+            // ✅ 如果是授权设备，尝试加载并上报IRK
+            if (isAuthorizedBtDevice(temp_results[i].mac)) {
+              BLEPairingInfo pairingInfo;
+              // 这里简化处理，实际中应该有更好的方式查找配对设备
+              // 可以通过数据库查询获取该MAC对应的IRK
+              device["has_pairing"] = true;
+            } else {
+              device["has_pairing"] = false;
+            }
           }
           doc["device_id"] = DEVICE_ID;
           
@@ -1108,6 +1494,7 @@ void bleScanner(void *parameter) {
                 
                 if (xSemaphoreTake(ble_mutex, pdMS_TO_TICKS(50))) {
                   ble_status.rssi = temp_results[i].rssi;
+                  strncpy(ble_status.mac_address, temp_results[i].mac, 17);
                   xSemaphoreGive(ble_mutex);
                 }
                 
@@ -1331,6 +1718,12 @@ void eventHandler() {
             }
           } else {
             Serial.printf("[Event] 上报失败，放弃本次读卡，code=%d\n", code);
+            // 🔧 备用逻辑：网络完全不可用时，可临时启用"离线模式"
+            // 取消以下注释以在网络失败时强制开门（安全隐患，仅用于调试）
+            // SystemEvent fallback_event;
+            // fallback_event.type = EVENT_NFC_PERMISSION_OK;
+            // strcpy(fallback_event.data, "offline");
+            // xQueueSend(event_queue, &fallback_event, 0);
           }
         }
         break;
@@ -1538,11 +1931,12 @@ void eventHandler() {
 
 void setup() {
   initHardware();
+  initNVS();  // ✅ 初始化NVS存储
   
   // 显示启动信息
   Serial.println("\n╔════════════════════════════════════════════╗");
   Serial.println("║   ESP32-S3 智能门禁控制器 v2.0            ║");
-  Serial.println("║   模式: FreeRTOS 双核并发                ║");
+  Serial.println("║   模式: FreeRTOS 双核并发 + BLE配对       ║");
   Serial.println("╠════════════════════════════════════════════╣");
   Serial.println("║  Core 0: NFC 实时读卡 + 门锁控制         ║");
   Serial.println("║  Core 1: 网络轮询 + 心跳 + 显示          ║");
@@ -1563,8 +1957,10 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n✅ WiFi 已连接");
     Serial.println("📍 IP: " + WiFi.localIP().toString());
+    Serial.println("🔗 Gateway: " + WiFi.gatewayIP().toString());
+    Serial.printf("🌐 Server: %s:%d\n", SERVER_HOST, SERVER_PORT);
   } else {
-    Serial.println("\n⚠️  WiFi 连接失败");
+    Serial.println("\n⚠️  WiFi 连接失败，请检查 SSID/密码");
   }
   
   // 注册设备

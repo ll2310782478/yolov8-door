@@ -128,6 +128,27 @@ class BluetoothBinding(Base):
     
     # 关系
     user = relationship("User", back_populates="bluetooth_devices")
+    pairing_records = relationship("BluetoothPairingRecord", back_populates="binding", cascade="all, delete-orphan")
+
+
+class BluetoothPairingRecord(Base):
+    """蓝牙配对记录模型 - 存储IRK和加密密钥"""
+    __tablename__ = "bluetooth_pairing_records"
+    __table_args__ = (Index('idx_binding_id_pairing_time', 'binding_id', 'pairing_timestamp'),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    binding_id = Column(Integer, ForeignKey("bluetooth_bindings.id", ondelete="CASCADE"), nullable=False, index=True)
+    device_irk = Column(String(32))  # 设备IRK（Identity Resolving Key）- 16字节十六进制
+    device_ltk = Column(String(32))  # 设备LTK（Long Term Key）- 16字节十六进制
+    device_name = Column(String(100))  # 配对时的设备名
+    pairing_method = Column(String(20), default="numeric_comparison")  # 配对方式
+    pairing_timestamp = Column(DateTime, default=datetime.utcnow)  # 配对时间
+    last_connection = Column(DateTime)  # 最后使用时间
+    connection_count = Column(Integer, default=0)  # 连接次数
+    firmware_version = Column(String(50))  # 设备固件版本
+    
+    # 关系
+    binding = relationship("BluetoothBinding", back_populates="pairing_records")
 
 
 class Visitor(Base):

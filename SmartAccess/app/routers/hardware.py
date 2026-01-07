@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask
+from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask, BluetoothPairingRecord
 from app.utils import check_permission_valid
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict
@@ -161,6 +161,42 @@ class BluetoothBindingResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class BluetoothPairingRecordResponse(BaseModel):
+    id: int
+    binding_id: int
+    device_irk: Optional[str] = None
+    device_ltk: Optional[str] = None
+    device_name: Optional[str] = None
+    pairing_method: str
+    pairing_timestamp: datetime
+    last_connection: Optional[datetime] = None
+    connection_count: int
+    firmware_version: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+
+class StartPairingRequest(BaseModel):
+    """开始配对请求
+    说明：原先仅返回提示信息，未向硬件发出任何指令。
+    本次扩展支持可选的 controller_device_id，用于向指定门禁控制器
+    下发“进入配对模式”的任务（通过 NFCTask 队列），从而触发硬件开启 BLE 广播。
+    """
+    binding_id: int
+    controller_device_id: Optional[str] = None  # 目标门禁控制器 device_id（可选）
+    timeout_seconds: int = 30  # 配对模式超时秒数（默认30秒）
+
+
+class CompletePairingRequest(BaseModel):
+    """完成配对请求"""
+    binding_id: int
+    device_irk: str  # 16字节十六进制
+    device_ltk: str  # 16字节十六进制
+    device_name: str
+    firmware_version: Optional[str] = None
 
 
 # ==================== 硬件设备管理 ====================
@@ -951,15 +987,18 @@ def verify_bluetooth_device(
     device_id: str = Body(...),
     bt_mac: str = Body(...),
     rssi: int = Body(...),
+    device_irk: Optional[str] = Body(None),  # 配对后的IRK识别
     db: Session = Depends(get_db)
 ):
-    """验证蓝牙设备权限 - 硬件轮询用"""
+    """验证蓝牙设备权限 - 硬件轮询用（支持MAC和IRK识别）"""
     bt_mac_upper = bt_mac.upper()
     
     # ✅ 检查冷却期（3分钟内已开过门）
     current_time = time.time()
-    if bt_mac_upper in bluetooth_cooldown_cache:
-        last_open_time = bluetooth_cooldown_cache[bt_mac_upper]
+    cache_key = device_irk if device_irk else bt_mac_upper
+    
+    if cache_key in bluetooth_cooldown_cache:
+        last_open_time = bluetooth_cooldown_cache[cache_key]
         time_since_last_open = current_time - last_open_time
         
         if time_since_last_open < COOLDOWN_PERIOD_SECONDS:
@@ -977,11 +1016,27 @@ def verify_bluetooth_device(
                 "cooldown_remaining_text": f"{remaining_minutes}分{remaining_secs}秒"
             }
     
-    # 查询该蓝牙MAC是否有有效的绑定
-    binding = db.query(BluetoothBinding).filter(
-        BluetoothBinding.device_id == bt_mac_upper,
-        BluetoothBinding.is_active == True
-    ).first()
+    binding = None
+    
+    # 🔐 优先使用IRK识别（配对设备）
+    if device_irk:
+        pairing_record = db.query(BluetoothPairingRecord).filter(
+            BluetoothPairingRecord.device_irk == device_irk.upper()
+        ).first()
+        
+        if pairing_record:
+            binding = pairing_record.binding
+            # 更新连接信息
+            pairing_record.last_connection = datetime.utcnow()
+            pairing_record.connection_count += 1
+            db.commit()
+    
+    # 降级到MAC识别（未配对或配对失败）
+    if not binding:
+        binding = db.query(BluetoothBinding).filter(
+            BluetoothBinding.device_id == bt_mac_upper,
+            BluetoothBinding.is_active == True
+        ).first()
     
     if not binding:
         return {"allow": False, "user_name": "Unknown", "reason": "Device not bound", "in_cooldown": False}
@@ -1011,6 +1066,7 @@ def verify_bluetooth_device(
         "allow": True,
         "user_name": user_name,
         "user_id": binding.user_id,
+        "binding_id": binding.id,
         "rssi": rssi,
         "in_cooldown": False
     }
@@ -1438,3 +1494,178 @@ def delete_nfc_task(task_id: int, db: Session = Depends(get_db)):
         "message": f"任务 {task_id} 已删除",
         "task_id": task_id
     }
+
+
+# ==================== 蓝牙配对管理 ====================
+
+@router.post("/bluetooth/pairing/start")
+def start_bluetooth_pairing(request: StartPairingRequest, db: Session = Depends(get_db)):
+    """开始蓝牙配对模式
+    行为：
+    - 校验绑定是否存在
+    - 如提供 controller_device_id，则向该设备投递 NFCTask（命令：BLE_PAIRING_START），
+      负载包含 binding_id 与 timeout_seconds，期望硬件据此进入 BLE 可发现/配对模式。
+    - 如未提供 controller_device_id，仅返回提示信息（与旧行为兼容）。
+    """
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == request.binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail="绑定不存在")
+
+    task_id = None
+    controller_status = None
+    if request.controller_device_id:
+        controller = db.query(HardwareDevice).filter(HardwareDevice.device_id == request.controller_device_id).first()
+        if not controller:
+            raise HTTPException(status_code=404, detail=f"门禁控制器 {request.controller_device_id} 不存在")
+        if controller.is_active is False:
+            controller_status = "inactive"
+
+        # 通过 NFCTask 队列向设备下发配对指令
+        try:
+            payload = {
+                "action": "ble_pairing_start",
+                "binding_id": request.binding_id,
+                "timeout_seconds": request.timeout_seconds
+            }
+            task = NFCTask(
+                device_id=request.controller_device_id,
+                command="BLE_PAIRING_START",
+                payload=__import__('json').dumps(payload),
+                status="pending",
+                created_at=datetime.utcnow()
+            )
+            db.add(task)
+            db.commit()
+            db.refresh(task)
+            task_id = task.id
+        except Exception as e:
+            # 若下发任务失败，返回可诊断信息
+            raise HTTPException(status_code=500, detail=f"下发配对任务失败: {str(e)}")
+
+    return {
+        "status": "pairing_mode_activated",
+        "binding_id": binding.id,
+        "device_id": binding.device_id,
+        "device_name": binding.device_name,
+        "pairing_method": "numeric_comparison",
+        "timeout_seconds": request.timeout_seconds,
+        "controller_device_id": request.controller_device_id,
+        "task_id": task_id,
+        "controller_status": controller_status,
+        "message": "如提供 controller_device_id，则已向设备下发进入配对模式任务；否则仅返回提示信息。"
+    }
+
+
+@router.post("/bluetooth/pairing/complete", response_model=BluetoothPairingRecordResponse)
+def complete_bluetooth_pairing(request: CompletePairingRequest, db: Session = Depends(get_db)):
+    """完成蓝牙配对 - 保存IRK和LTK"""
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == request.binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail="绑定不存在")
+    
+    # 删除旧的配对记录（如果存在）
+    db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == request.binding_id
+    ).delete()
+    
+    # 创建新的配对记录
+    pairing_record = BluetoothPairingRecord(
+        binding_id=request.binding_id,
+        device_irk=request.device_irk.upper(),
+        device_ltk=request.device_ltk.upper(),
+        device_name=request.device_name,
+        pairing_method="numeric_comparison",
+        firmware_version=request.firmware_version,
+        connection_count=1,
+        last_connection=datetime.utcnow()
+    )
+    
+    db.add(pairing_record)
+    
+    # 更新binding为已配对状态
+    binding.is_paired = True
+    binding.device_name = request.device_name
+    binding.last_connect_time = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(pairing_record)
+    
+    return pairing_record
+
+
+@router.get("/bluetooth/pairing/{binding_id}", response_model=BluetoothPairingRecordResponse)
+def get_pairing_record(binding_id: int, db: Session = Depends(get_db)):
+    """获取蓝牙配对记录"""
+    pairing_record = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == binding_id
+    ).first()
+    
+    if not pairing_record:
+        raise HTTPException(status_code=404, detail="配对记录不存在")
+    
+    return pairing_record
+
+
+@router.get("/bluetooth/pairings/{binding_id}")
+def list_pairing_records(binding_id: int, db: Session = Depends(get_db)):
+    """获取绑定的所有配对记录"""
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail="绑定不存在")
+    
+    records = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == binding_id
+    ).order_by(BluetoothPairingRecord.pairing_timestamp.desc()).all()
+    
+    return records
+
+
+@router.post("/bluetooth/pairing/verify-irk")
+def verify_device_by_irk(irk: str = Query(...), db: Session = Depends(get_db)):
+    """使用IRK验证蓝牙设备身份"""
+    irk_upper = irk.upper()
+    
+    # 查找匹配的配对记录
+    pairing_record = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.device_irk == irk_upper
+    ).first()
+    
+    if not pairing_record:
+        return {"verified": False, "message": "IRK未找到"}
+    
+    # 更新连接统计
+    pairing_record.last_connection = datetime.utcnow()
+    pairing_record.connection_count += 1
+    db.commit()
+    
+    binding = pairing_record.binding
+    return {
+        "verified": True,
+        "binding_id": binding.id,
+        "user_id": binding.user_id,
+        "device_name": binding.device_name,
+        "last_connection": pairing_record.last_connection,
+        "connection_count": pairing_record.connection_count
+    }
+
+
+@router.delete("/bluetooth/pairing/{binding_id}")
+def delete_pairing_record(binding_id: int, db: Session = Depends(get_db)):
+    """删除蓝牙配对记录 - 解除配对"""
+    pairing_record = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == binding_id
+    ).first()
+    
+    if not pairing_record:
+        raise HTTPException(status_code=404, detail="配对记录不存在")
+    
+    db.delete(pairing_record)
+    
+    # 更新binding状态
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == binding_id).first()
+    if binding:
+        binding.is_paired = False
+    
+    db.commit()
+    
+    return {"status": "success", "message": "配对记录已删除"}

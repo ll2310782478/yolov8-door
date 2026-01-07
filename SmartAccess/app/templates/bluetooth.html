@@ -394,6 +394,9 @@
           <span class="status-badge ${binding.is_active ? 'status-active' : 'status-inactive'}">
             ${binding.is_active ? '● 启用' : '○ 禁用'}
           </span>
+          <span class="status-badge" style="background: ${binding.is_paired ? '#4CAF50' : '#999'}; margin-left: 0.5rem;">
+            🔐 ${binding.is_paired ? '已配对' : '未配对'}
+          </span>
         </div>
         <div class="binding-info">
           <strong>MAC地址:</strong> <span class="mac-address" title="${binding.device_id}">${binding.device_id}</span>
@@ -414,6 +417,9 @@
           <strong>⏱️ 冷却期:</strong> <span class="cooldown-time">检查中...</span>
         </div>
         <div class="binding-actions">
+          <button class="btn btn-primary btn-sm" onclick="startPairing(${binding.id})" style="flex: 1;">
+            🔐 ${binding.is_paired ? '重新配对' : '开始配对'}
+          </button>
           <button class="btn btn-ghost" onclick="toggleBinding(${binding.id}, ${!binding.is_active})">
             ${binding.is_active ? '禁用' : '启用'}
           </button>
@@ -698,6 +704,127 @@
       } catch (error) {
         console.error('删除失败:', error);
         showToast('删除失败', 'error');
+      }
+    }
+
+    // ==================== BLE 配对管理函数 ====================
+
+    // 开始配对模式
+    async function startPairing(bindingId) {
+      try {
+        // 选择一个在线且启用的控制器（优先 door_controller*），用于下发进入配对模式的任务
+        let controllerId = null;
+        try {
+          const devRes = await fetch('/api/hardware/devices');
+          if (devRes.ok) {
+            const devices = await devRes.json();
+            const now = Date.now();
+            const online = devices.filter(d => {
+              if (!d.is_active || d.connection_status !== 'online' || !d.last_heartbeat) return false;
+              const t = new Date((d.last_heartbeat || '') + 'Z');
+              return !isNaN(t.getTime()) && (now - t.getTime())/1000 < 90;
+            });
+            const preferred = online.find(d => (d.device_type || '').includes('door_controller')) || online[0];
+            controllerId = preferred ? preferred.device_id : null;
+          }
+        } catch (e) { /* 忽略设备列表获取失败，继续兼容旧行为 */ }
+
+        const payload = { binding_id: bindingId, timeout_seconds: 30 };
+        if (controllerId) payload.controller_device_id = controllerId;
+
+        const response = await fetch('/api/hardware/bluetooth/pairing/start', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          const seconds = Number(result.timeout_seconds) || 30;
+          const ctrlText = result.controller_device_id ? `（控制器: ${result.controller_device_id}）` : '';
+          showToast(`✅ 配对模式已激活${ctrlText}，请在${seconds}秒内在手机上进行配对`, 'success');
+          
+          // 显示配对倒计时
+          showPairingCountdown(seconds, bindingId);
+        } else {
+          showToast('启动配对失败', 'error');
+        }
+      } catch (error) {
+        console.error('启动配对失败:', error);
+        showToast('启动配对失败: ' + error.message, 'error');
+      }
+    }
+
+    // 显示配对倒计时
+    function showPairingCountdown(seconds, bindingId) {
+      let remaining = seconds;
+      const updateCountdown = () => {
+        if (remaining <= 0) {
+          clearInterval(window.pairingTimer);
+          showToast('配对模式已超时', 'error');
+          return;
+        }
+        
+        const btn = document.querySelector(`button[onclick="startPairing(${bindingId})"]`);
+        if (btn) {
+          btn.textContent = `⏱️ 配对中... ${remaining}秒`;
+          btn.disabled = true;
+        }
+        remaining--;
+      };
+      
+      updateCountdown();
+      window.pairingTimer = setInterval(updateCountdown, 1000);
+    }
+
+    // 完成配对（从硬件调用）
+    async function completePairing(bindingId, deviceIrk, deviceLtk, deviceName, firmwareVersion) {
+      try {
+        const response = await fetch('/api/hardware/bluetooth/pairing/complete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            binding_id: bindingId,
+            device_irk: deviceIrk,
+            device_ltk: deviceLtk,
+            device_name: deviceName,
+            firmware_version: firmwareVersion
+          })
+        });
+        
+        if (response.ok) {
+          showToast('✅ 配对成功！', 'success');
+          clearInterval(window.pairingTimer);
+          loadBindings();  // 重新加载列表
+        } else {
+          showToast('保存配对信息失败', 'error');
+        }
+      } catch (error) {
+        console.error('保存配对失败:', error);
+        showToast('保存配对失败: ' + error.message, 'error');
+      }
+    }
+
+    // 删除配对（解除配对）
+    async function removePairing(bindingId) {
+      if (!confirm('确定要删除此配对吗？设备将需要重新配对。')) {
+        return;
+      }
+      
+      try {
+        const response = await fetch(`/api/hardware/bluetooth/pairing/${bindingId}`, {
+          method: 'DELETE'
+        });
+        
+        if (response.ok) {
+          showToast('✅ 配对已删除', 'success');
+          loadBindings();  // 重新加载列表
+        } else {
+          showToast('删除配对失败', 'error');
+        }
+      } catch (error) {
+        console.error('删除配对失败:', error);
+        showToast('删除配对失败: ' + error.message, 'error');
       }
     }
 
