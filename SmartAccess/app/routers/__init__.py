@@ -6,5 +6,6 @@ from . import visitors
 from . import face_recognition
 from . import auth
 from . import web
+from . import system
 
-__all__ = ['users', 'hardware', 'visitors', 'face_recognition', 'auth', 'web']
+__all__ = ['users', 'hardware', 'visitors', 'face_recognition', 'auth', 'web', 'system']

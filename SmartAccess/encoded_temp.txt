@@ -1,0 +1,1672 @@
+﻿&quot;&quot;&quot;硬件接口路由 - 增强版 (NFC/蓝牙/日志)&quot;&quot;&quot;
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask, BluetoothPairingRecord
+from app.utils import check_permission_valid
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict
+from pydantic import BaseModel
+from fastapi import Request
+import time
+
+router = APIRouter(
+    prefix=&quot;/api/hardware&quot;,
+    tags=[&quot;hardware&quot;],
+    responses={404: {&quot;description&quot;: &quot;Not found&quot;}},
+)
+
+# ==================== 蓝牙扫描缓存 ====================
+# 全局缓存：存储最近扫描到的蓝牙设备 {mac: {data, timestamp}}
+bluetooth_scan_cache: Dict[str, dict] = {}
+CACHE_EXPIRE_SECONDS = 60  # 缓存60秒
+
+# ==================== 蓝牙开门冷却期缓存 ====================
+# 全局缓存：记录设备最后开门时间 {mac: timestamp}
+bluetooth_cooldown_cache: Dict[str, float] = {}
+COOLDOWN_PERIOD_SECONDS = 180  # 冷却期3分钟（180秒）
+
+# ==================== Pydantic 模型 ====================
+
+class HardwareDeviceCreate(BaseModel):
+    device_id: str
+    device_name: str
+    device_type: str  # door_controller, door_controller_nfc
+    device_mode: str = &quot;remote_only&quot;  # remote_only(门禁1), remote_nfc(门禁2)
+    location: Optional[str] = None
+    ip_address: Optional[str] = None
+    port: Optional[int] = None
+
+
+class HardwareDeviceUpdate(BaseModel):
+    device_name: Optional[str] = None
+    device_mode: Optional[str] = None
+    location: Optional[str] = None
+    is_active: Optional[bool] = None
+    ip_address: Optional[str] = None
+    port: Optional[int] = None
+
+
+class HardwareHeartbeat(BaseModel):
+    connection_status: str = &quot;online&quot;
+    ip_address: Optional[str] = None
+    firmware_version: Optional[str] = None
+
+
+class HardwareDeviceResponse(BaseModel):
+    id: int
+    device_id: str
+    device_name: str
+    device_type: str
+    device_mode: Optional[str] = None
+    location: Optional[str] = None
+    is_active: bool
+    last_heartbeat: Optional[datetime] = None
+    connection_status: Optional[str] = None
+    ip_address: Optional[str] = None
+    port: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class AccessLogResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None  # 允许NULL（访客或系统日志）
+    access_type: str
+    status: str
+    timestamp: datetime
+    device_id: str
+    details: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+
+# ======================== NFC 卡片模型 ========================
+
+class NFCCardCreate(BaseModel):
+    user_id: Optional[int] = None  # 允许NULL（访客或系统日志）
+    card_number: str
+    card_name: Optional[str] = None
+    permission_end_date: Optional[datetime] = None
+    max_daily_uses: int = 0
+    door_id: str = &quot;door1&quot;  # door1 / door2
+    device_id: Optional[str] = None  # 绑定的设备ID，为空则对所有设备有效
+
+
+class NFCCardUpdate(BaseModel):
+    card_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    permission_end_date: Optional[datetime] = None
+    max_daily_uses: Optional[int] = None
+    time_periods: Optional[str] = None
+    door_id: Optional[str] = None
+    device_id: Optional[str] = None  # 绑定的设备ID
+
+
+class NFCCardResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None  # 允许NULL（访客或系统日志）
+    card_number: str
+    card_name: Optional[str] = None
+    door_id: Optional[str] = None
+    device_id: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    permission_start_date: datetime
+    permission_end_date: Optional[datetime]
+    max_daily_uses: int
+    daily_use_count: int
+
+    class Config:
+        orm_mode = True
+
+
+# ======================== 蓝牙设备模型 ========================
+
+class BluetoothBindingCreate(BaseModel):
+    user_id: Optional[int] = None  # 允许NULL（访客或系统日志）
+    device_id: str
+    device_name: Optional[str] = None
+    is_paired: bool = False
+    permission_end_date: Optional[datetime] = None
+    max_daily_uses: int = 0
+
+
+class BluetoothBindingUpdate(BaseModel):
+    device_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_paired: Optional[bool] = None
+    permission_end_date: Optional[datetime] = None
+    max_daily_uses: Optional[int] = None
+
+
+class BluetoothBindingResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None  # 允许NULL（访客或系统日志）
+    device_id: str
+    device_name: Optional[str] = None
+    is_paired: bool
+    is_active: bool
+    created_at: datetime
+    last_connect_time: Optional[datetime]
+    permission_start_date: datetime
+    permission_end_date: Optional[datetime]
+    max_daily_uses: int
+    daily_use_count: int = 0
+    last_use_date: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True
+
+
+class BluetoothPairingRecordResponse(BaseModel):
+    id: int
+    binding_id: int
+    device_irk: Optional[str] = None
+    device_ltk: Optional[str] = None
+    device_name: Optional[str] = None
+    pairing_method: str
+    pairing_timestamp: datetime
+    last_connection: Optional[datetime] = None
+    connection_count: int
+    firmware_version: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+
+class StartPairingRequest(BaseModel):
+    &quot;&quot;&quot;开始配对请求
+    说明：原先仅返回提示信息，未向硬件发出任何指令。
+    本次扩展支持可选的 controller_device_id，用于向指定门禁控制器
+    下发“进入配对模式”的任务（通过 NFCTask 队列），从而触发硬件开启 BLE 广播。
+    &quot;&quot;&quot;
+    binding_id: int
+    controller_device_id: Optional[str] = None  # 目标门禁控制器 device_id（可选）
+    timeout_seconds: int = 30  # 配对模式超时秒数（默认30秒）
+
+
+class CompletePairingRequest(BaseModel):
+    &quot;&quot;&quot;完成配对请求&quot;&quot;&quot;
+    binding_id: int
+    device_irk: str  # 16字节十六进制
+    device_ltk: str  # 16字节十六进制
+    device_name: str
+    firmware_version: Optional[str] = None
+
+
+# ==================== 硬件设备管理 ====================
+
+@router.get(&quot;/devices&quot;, response_model=List[HardwareDeviceResponse])
+def list_devices(
+    device_type: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;获取所有硬件设备&quot;&quot;&quot;
+    query = db.query(HardwareDevice)
+    
+    if device_type:
+        query = query.filter(HardwareDevice.device_type == device_type)
+    if is_active is not None:
+        query = query.filter(HardwareDevice.is_active == is_active)
+    
+    devices = query.all()
+    return devices
+
+
+@router.post(&quot;/devices&quot;, response_model=HardwareDeviceResponse)
+def create_device(device: HardwareDeviceCreate, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;注册新硬件设备&quot;&quot;&quot;
+    existing = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device.device_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=&quot;设备ID已存在&quot;)
+
+    db_device = HardwareDevice(
+        device_id=device.device_id,
+        device_name=device.device_name,
+        device_type=device.device_type,
+        device_mode=device.device_mode,
+        location=device.location,
+        ip_address=device.ip_address,
+        port=device.port,
+        connection_status=&quot;offline&quot;
+    )
+    db.add(db_device)
+    db.commit()
+    db.refresh(db_device)
+    return db_device
+
+
+@router.put(&quot;/devices/{device_id}&quot;, response_model=HardwareDeviceResponse)
+def update_device(device_id: str, device_update: HardwareDeviceUpdate, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;更新硬件设备信息&quot;&quot;&quot;
+    db_device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device_id
+    ).first()
+    
+    if not db_device:
+        raise HTTPException(status_code=404, detail=&quot;设备不存在&quot;)
+    
+    if device_update.device_name:
+        db_device.device_name = device_update.device_name
+    if device_update.device_mode:
+        db_device.device_mode = device_update.device_mode
+    if device_update.location:
+        db_device.location = device_update.location
+    if device_update.is_active is not None:
+        db_device.is_active = device_update.is_active
+    if device_update.ip_address:
+        db_device.ip_address = device_update.ip_address
+    if device_update.port:
+        db_device.port = device_update.port
+    
+    db.commit()
+    db.refresh(db_device)
+    return db_device
+
+
+@router.post(&quot;/devices/{device_id}/heartbeat&quot;)
+def device_heartbeat(
+    device_id: str,
+    heartbeat: HardwareHeartbeat = Body(default=None),
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;设备心跳检测&quot;&quot;&quot;
+    db_device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device_id
+    ).first()
+    
+    if not db_device:
+        raise HTTPException(status_code=404, detail=&quot;设备不存在&quot;)
+    
+    payload = heartbeat or HardwareHeartbeat()
+    db_device.last_heartbeat = datetime.utcnow()
+    db_device.is_active = True
+    db_device.connection_status = payload.connection_status or &quot;online&quot;
+    if payload.ip_address:
+        db_device.ip_address = payload.ip_address
+    if payload.firmware_version:
+        db_device.firmware_version = payload.firmware_version
+    db.commit()
+    return {
+        &quot;status&quot;: &quot;ok&quot;,
+        &quot;device_id&quot;: device_id,
+        &quot;connection_status&quot;: db_device.connection_status,
+        &quot;timestamp&quot;: datetime.utcnow(),
+    }
+
+
+@router.delete(&quot;/devices/{device_id}&quot;)
+def delete_device(device_id: str, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;删除硬件设备&quot;&quot;&quot;
+    db_device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device_id
+    ).first()
+    
+    if not db_device:
+        raise HTTPException(status_code=404, detail=&quot;设备不存在&quot;)
+    
+    db.delete(db_device)
+    db.commit()
+    return {&quot;message&quot;: &quot;设备已删除&quot;}
+
+
+# ==================== NFC 卡片管理 ====================
+
+@router.post(&quot;/nfc/cards&quot;, response_model=NFCCardResponse)
+def create_nfc_card(card: NFCCardCreate, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;创建 NFC 卡片记录&quot;&quot;&quot;
+    user = db.query(User).filter(User.id == card.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=&quot;用户不存在&quot;)
+    
+    existing = db.query(NFCCard).filter(
+        NFCCard.card_number == card.card_number
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=&quot;卡片号已存在&quot;)
+    
+    nfc_card = NFCCard(
+        user_id=card.user_id,
+        card_number=card.card_number,
+        card_name=card.card_name,
+        door_id=card.door_id,
+        device_id=card.device_id,
+        permission_start_date=datetime.utcnow(),
+        permission_end_date=card.permission_end_date,
+        max_daily_uses=card.max_daily_uses,
+    )
+    db.add(nfc_card)
+    db.commit()
+    db.refresh(nfc_card)
+    return nfc_card
+
+
+@router.get(&quot;/nfc/cards&quot;, response_model=List[NFCCardResponse])
+def list_nfc_cards(
+    user_id: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;获取 NFC 卡片列表&quot;&quot;&quot;
+    query = db.query(NFCCard)
+    
+    if user_id:
+        query = query.filter(NFCCard.user_id == user_id)
+    if is_active is not None:
+        query = query.filter(NFCCard.is_active == is_active)
+    
+    cards = query.all()
+    return cards
+
+
+@router.get(&quot;/nfc/card/{card_id}&quot;, response_model=NFCCardResponse)
+def get_nfc_card(card_id: int, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;获取 NFC 卡片详情&quot;&quot;&quot;
+    card = db.query(NFCCard).filter(NFCCard.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail=&quot;卡片不存在&quot;)
+    return card
+
+
+@router.put(&quot;/nfc/card/{card_id}&quot;, response_model=NFCCardResponse)
+def update_nfc_card(card_id: int, card_update: NFCCardUpdate, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;更新 NFC 卡片信息（权限、时效、设备绑定等）&quot;&quot;&quot;
+    card = db.query(NFCCard).filter(NFCCard.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail=&quot;卡片不存在&quot;)
+    
+    if card_update.card_name:
+        card.card_name = card_update.card_name
+    if card_update.is_active is not None:
+        card.is_active = card_update.is_active
+    if card_update.permission_end_date is not None:
+        card.permission_end_date = card_update.permission_end_date
+    if card_update.max_daily_uses is not None:
+        card.max_daily_uses = card_update.max_daily_uses
+    if card_update.time_periods:
+        card.time_periods = card_update.time_periods
+    if card_update.door_id:
+        card.door_id = card_update.door_id
+    if card_update.device_id is not None:
+        card.device_id = card_update.device_id
+    
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+@router.delete(&quot;/nfc/card/{card_id}&quot;)
+def delete_nfc_card(card_id: int, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;删除 NFC 卡片&quot;&quot;&quot;
+    card = db.query(NFCCard).filter(NFCCard.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail=&quot;卡片不存在&quot;)
+    
+    db.delete(card)
+    db.commit()
+    return {&quot;message&quot;: &quot;卡片已删除&quot;}
+
+
+@router.post(&quot;/nfc/access&quot;)
+def nfc_access(card_number: str, device_id: str, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;NFC 门禁访问&quot;&quot;&quot;
+    card = db.query(NFCCard).filter(NFCCard.card_number == card_number).first()
+    
+    if not card:
+        access_log = AccessLog(
+            user_id=None,
+            access_type=&quot;nfc&quot;,
+            status=&quot;failed&quot;,
+            device_id=device_id,
+            details=&quot;Unknown NFC card&quot;
+        )
+        db.add(access_log)
+        db.commit()
+        return {&quot;status&quot;: &quot;failed&quot;, &quot;message&quot;: &quot;未知的卡片&quot;}
+    
+    if not card.is_active:
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type=&quot;nfc&quot;,
+            status=&quot;denied&quot;,
+            device_id=device_id,
+            details=&quot;Card disabled&quot;
+        )
+        db.add(access_log)
+        db.commit()
+        return {&quot;status&quot;: &quot;denied&quot;, &quot;message&quot;: &quot;卡片已被禁用&quot;}
+    
+    # 检查权限时效
+    if not check_permission_valid(card.permission_start_date, card.permission_end_date):
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type=&quot;nfc&quot;,
+            status=&quot;denied&quot;,
+            device_id=device_id,
+            details=&quot;Card permission expired&quot;
+        )
+        db.add(access_log)
+        db.commit()
+        return {&quot;status&quot;: &quot;denied&quot;, &quot;message&quot;: &quot;卡片权限已过期&quot;}
+    
+    # 记录访问日志
+    access_log = AccessLog(
+        user_id=card.user_id,
+        access_type=&quot;nfc&quot;,
+        status=&quot;success&quot;,
+        device_id=device_id,
+        details=f&quot;NFC card access - Card: {card.card_name or card.card_number}&quot;
+    )
+    db.add(access_log)
+    
+    # 更新使用统计
+    card.daily_use_count += 1
+    card.last_use_date = datetime.utcnow()
+    
+    db.commit()
+    user = card.user
+    return {
+        &quot;status&quot;: &quot;success&quot;,
+        &quot;message&quot;: f&quot;欢迎 {user.full_name or user.username}&quot;,
+        &quot;user_id&quot;: user.id,
+        &quot;user_name&quot;: user.full_name or user.username
+    }
+
+
+# ==================== PN532 / 设备 对接：主动上报扫描结果 ====================
+
+
+class NFCScanRequest(BaseModel):
+    card_uid: str
+    device_id: Optional[str] = None
+
+
+@router.post(&quot;/nfc-scan&quot;)
+@router.get(&quot;/nfc-scan&quot;)
+def nfc_scan(
+    card_uid: Optional[str] = Query(None),
+    device_id: Optional[str] = Query(None),
+    req: Optional[NFCScanRequest] = None,
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;供设备上报读取到的卡号。返回 action: OPEN/DENY 和 message。
+
+    支持两种调用方式:
+    1. POST JSON: {&quot;card_uid&quot;:&quot;AA-BB-CC-...&quot;,&quot;device_id&quot;:&quot;door_controller_2&quot;}
+    2. GET Query: ?card_uid=AA-BB-CC-...&amp;device_id=door_controller_2
+    &quot;&quot;&quot;
+    # 从POST或GET获取参数
+    if req:
+        card_uid = req.card_uid
+        device_id = req.device_id or request.client.host
+    else:
+        device_id = device_id or request.client.host if request else None
+
+    if not card_uid:
+        return {&quot;action&quot;: &quot;DENY&quot;, &quot;msg&quot;: &quot;卡号不能为空&quot;}
+
+    card_uid = card_uid.strip().upper()
+
+    # 检查设备是否存在及其模式
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device_id
+    ).first()
+
+    if not device:
+        return {&quot;action&quot;: &quot;DENY&quot;, &quot;msg&quot;: &quot;设备不存在&quot;}
+
+    # 检查是否存在未完成的 NFCTask（最近 30 秒内）并将结果挂到任务上
+    task = db.query(NFCTask).filter(
+        NFCTask.device_id == device_id,
+        NFCTask.status.in_([&quot;pending&quot;, &quot;sent&quot;])
+    ).order_by(NFCTask.created_at.desc()).first()
+
+    # 检查设备是否支持NFC：兼容旧数据，device_mode为空但 device_type 含 nfc 也视为支持
+    supports_nfc = (device.device_mode == &quot;remote_nfc&quot;) or (device.device_type and &quot;nfc&quot; in device.device_type)
+    if not supports_nfc:
+        if task:
+            task.status = &quot;done&quot;
+            task.result = f&#39;{{&quot;card_uid&quot;:&quot;{card_uid}&quot;,&quot;status&quot;:&quot;unsupported_device&quot;}}&#39;
+            task.consumed_at = datetime.utcnow()
+            db.commit()
+        return {&quot;action&quot;: &quot;DENY&quot;, &quot;msg&quot;: &quot;此设备不支持NFC功能&quot;}
+
+    # 查找卡片
+    card = db.query(NFCCard).filter(NFCCard.card_number == card_uid).first()
+
+    if not card:
+        # 如果卡片不存在且有ENROLL任务，记录卡片UID到任务结果，不创建AccessLog
+        if task and task.command == &quot;ENROLL&quot;:
+            task.status = &quot;done&quot;
+            task.result = f&#39;{{&quot;card_uid&quot;:&quot;{card_uid}&quot;}}&#39;
+            task.consumed_at = datetime.utcnow()
+            db.commit()
+            return {&quot;action&quot;: &quot;ACCEPT&quot;, &quot;msg&quot;: &quot;卡片已识别，请等待后台注册&quot;}
+        
+        # 如果是SCAN或其他命令，不创建NULL user_id的AccessLog，直接返回DENY
+        if task:
+            task.status = &quot;done&quot;
+            task.result = f&#39;{{&quot;card_uid&quot;:&quot;{card_uid}&quot;,&quot;status&quot;:&quot;unknown&quot;}}&#39;
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {&quot;action&quot;: &quot;DENY&quot;, &quot;msg&quot;: &quot;未知卡片&quot;}
+
+    # 检查卡片是否绑定到此设备（device_id不为空时）
+    if card.device_id and card.device_id != device_id:
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type=&quot;nfc&quot;,
+            status=&quot;denied&quot;,
+            device_id=device_id,
+            details=f&quot;Card not assigned to this device (bound to {card.device_id})&quot;
+        )
+        db.add(access_log)
+        if task:
+            task.status = &quot;done&quot;
+            task.result = f&#39;{{&quot;card_uid&quot;:&quot;{card_uid}&quot;,&quot;status&quot;:&quot;device_mismatch&quot;}}&#39;
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {&quot;action&quot;: &quot;DENY&quot;, &quot;msg&quot;: &quot;卡片未授权给此设备&quot;}
+
+    # 校验卡片是否启用/时效等
+    if not card.is_active:
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type=&quot;nfc&quot;,
+            status=&quot;denied&quot;,
+            device_id=device_id,
+            details=&quot;Card disabled&quot;
+        )
+        db.add(access_log)
+        if task:
+            task.status = &quot;done&quot;
+            task.result = f&#39;{{&quot;card_uid&quot;:&quot;{card_uid}&quot;,&quot;status&quot;:&quot;disabled&quot;}}&#39;
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {&quot;action&quot;: &quot;DENY&quot;, &quot;msg&quot;: &quot;卡片已被禁用&quot;}
+
+    if not check_permission_valid(card.permission_start_date, card.permission_end_date):
+        access_log = AccessLog(
+            user_id=card.user_id,
+            access_type=&quot;nfc&quot;,
+            status=&quot;denied&quot;,
+            device_id=device_id,
+            details=&quot;Card permission expired&quot;
+        )
+        db.add(access_log)
+        if task:
+            task.status = &quot;done&quot;
+            task.result = f&#39;{{&quot;card_uid&quot;:&quot;{card_uid}&quot;,&quot;status&quot;:&quot;expired&quot;}}&#39;
+            task.consumed_at = datetime.utcnow()
+        db.commit()
+        return {&quot;action&quot;: &quot;DENY&quot;, &quot;msg&quot;: &quot;卡片权限已过期&quot;}
+
+    # 成功：记录日志，更新统计，关联任务
+    access_log = AccessLog(
+        user_id=card.user_id,
+        access_type=&quot;nfc&quot;,
+        status=&quot;success&quot;,
+        device_id=device_id,
+        details=f&quot;NFC card access - Card: {card.card_name or card.card_number}&quot;
+    )
+    db.add(access_log)
+
+    card.daily_use_count += 1
+    card.last_use_date = datetime.utcnow()
+
+    if task:
+        task.status = &quot;done&quot;
+        task.result = f&quot;{{\&quot;card_uid\&quot;:\&quot;{card_uid}\&quot;,\&quot;status\&quot;:\&quot;success\&quot;,\&quot;user_id\&quot;:{card.user_id},\&quot;door\&quot;:\&quot;{card.door_id}\&quot;}}&quot;
+        task.consumed_at = datetime.utcnow()
+
+    db.commit()
+
+    user = card.user
+    return {&quot;action&quot;: &quot;OPEN&quot;, &quot;door&quot;: card.door_id, &quot;msg&quot;: f&quot;欢迎 {user.full_name or user.username}&quot;}
+
+
+# ==================== Web -&gt; 设备 的命令队列（用于点击触发扫描） ====================
+
+
+class NFCTaskCreate(BaseModel):
+    device_id: str
+    command: str = &quot;SCAN&quot;
+    payload: Optional[str] = None
+
+
+class NFCTaskResponse(BaseModel):
+    id: int
+    device_id: str
+    command: str
+    status: str
+    created_at: datetime
+    sent_at: Optional[datetime]
+    consumed_at: Optional[datetime]
+    result: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+
+@router.post(&quot;/nfc/command&quot;, response_model=NFCTaskResponse)
+def create_nfc_command(task_in: NFCTaskCreate, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;Web 后台创建一个 NFC 任务（通常是 SCAN），设备会轮询并执行。&quot;&quot;&quot;
+    task = NFCTask(
+        device_id=task_in.device_id,
+        command=task_in.command,
+        payload=task_in.payload,
+        status=&quot;pending&quot;,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+class PollRequest(BaseModel):
+    &quot;&quot;&quot;轮询请求模型&quot;&quot;&quot;
+    device_id: str
+
+
+class RemoteDoorRequest(BaseModel):
+    &quot;&quot;&quot;远程开门请求&quot;&quot;&quot;
+    device_id: str
+    door_id: int  # 1 或 2
+    source: str = &quot;remote&quot;  # 触发来源
+
+
+@router.post(&quot;/remote-door/open&quot;)
+def remote_open_door(request: RemoteDoorRequest, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;
+    远程开门接口 - Web端调用
+    创建一个OPEN指令任务，设备轮询时会执行
+    &quot;&quot;&quot;
+    # 检查设备是否存在
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == request.device_id
+    ).first()
+    
+    if not device:
+        raise HTTPException(status_code=404, detail=&quot;设备不存在&quot;)
+    
+    if not device.is_active:
+        raise HTTPException(status_code=400, detail=&quot;设备未激活&quot;)
+    
+    # 创建开门任务
+    door_str = f&quot;door{request.door_id}&quot;
+    task = NFCTask(
+        device_id=request.device_id,
+        command=&quot;OPEN&quot;,
+        payload=f&#39;{{&quot;door&quot;: &quot;{door_str}&quot;, &quot;source&quot;: &quot;{request.source}&quot;}}&#39;,
+        status=&quot;pending&quot;
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    
+    return {
+        &quot;success&quot;: True,
+        &quot;message&quot;: f&quot;开门指令已下发到设备 {request.device_id}&quot;,
+        &quot;task_id&quot;: task.id,
+        &quot;door&quot;: door_str
+    }
+
+
+@router.post(&quot;/nfc/command/poll&quot;)
+@router.get(&quot;/nfc/command/poll&quot;)
+def poll_nfc_command(
+    device_id: Optional[str] = Query(None), 
+    request_body: Optional[PollRequest] = None,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;
+    设备轮询此接口以获取待执行命令
+    支持 GET 和 POST 两种方法
+    - GET: ?device_id=xxx
+    - POST: {&quot;device_id&quot;: &quot;xxx&quot;}
+    &quot;&quot;&quot;
+    # 从GET参数或POST body获取device_id
+    dev_id = device_id if device_id else (request_body.device_id if request_body else None)
+    
+    if not dev_id:
+        return {&quot;has_command&quot;: False, &quot;message&quot;: &quot;未提供device_id&quot;}
+    
+    # 查询待执行的命令
+    task = db.query(NFCTask).filter(
+        NFCTask.device_id == dev_id,
+        NFCTask.status == &quot;pending&quot;
+    ).order_by(NFCTask.created_at.asc()).first()
+    
+    if not task:
+        return {&quot;has_command&quot;: False}
+
+    # 标记为已发送
+    task.status = &quot;sent&quot;
+    task.sent_at = datetime.utcnow()
+    db.commit()
+    
+    return {
+        &quot;has_command&quot;: True,
+        &quot;task_id&quot;: task.id,
+        &quot;command&quot;: task.command,
+        &quot;payload&quot;: task.payload
+    }
+
+
+@router.get(&quot;/nfc/command/status/{task_id}&quot;)
+def get_nfc_command_status(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(NFCTask).filter(NFCTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=&quot;任务不存在&quot;)
+    return {
+        &quot;id&quot;: task.id,
+        &quot;status&quot;: task.status,
+        &quot;result&quot;: task.result,
+        &quot;created_at&quot;: task.created_at,
+        &quot;consumed_at&quot;: task.consumed_at
+    }
+
+
+
+# ==================== 蓝牙设备管理 ====================
+
+@router.post(&quot;/bluetooth/bindings&quot;, response_model=BluetoothBindingResponse)
+def create_bluetooth_binding(binding: BluetoothBindingCreate, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;创建蓝牙设备绑定&quot;&quot;&quot;
+    user = db.query(User).filter(User.id == binding.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=&quot;用户不存在&quot;)
+    
+    existing = db.query(BluetoothBinding).filter(
+        BluetoothBinding.user_id == binding.user_id,
+        BluetoothBinding.device_id == binding.device_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=&quot;该用户已绑定此蓝牙设备&quot;)
+    
+    bt_binding = BluetoothBinding(
+        user_id=binding.user_id,
+        device_id=binding.device_id,
+        device_name=binding.device_name,
+        is_paired=binding.is_paired,
+        permission_start_date=datetime.utcnow(),
+        permission_end_date=binding.permission_end_date,
+        max_daily_uses=binding.max_daily_uses,
+    )
+    db.add(bt_binding)
+    db.commit()
+    db.refresh(bt_binding)
+    return bt_binding
+
+
+@router.get(&quot;/bluetooth/bindings&quot;)
+def list_bluetooth_bindings(
+    user_id: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;获取蓝牙设备绑定列表（含使用统计）&quot;&quot;&quot;
+    query = db.query(BluetoothBinding)
+    
+    if user_id:
+        query = query.filter(BluetoothBinding.user_id == user_id)
+    if is_active is not None:
+        query = query.filter(BluetoothBinding.is_active == is_active)
+    
+    bindings = query.all()
+    
+    # 为每个绑定添加使用统计
+    result = []
+    today = datetime.utcnow().date()
+    today_start = datetime.combine(today, datetime.min.time())
+    
+    for binding in bindings:
+        binding_dict = {
+            &quot;id&quot;: binding.id,
+            &quot;user_id&quot;: binding.user_id,
+            &quot;device_id&quot;: binding.device_id,
+            &quot;device_name&quot;: binding.device_name,
+            &quot;is_paired&quot;: binding.is_paired,
+            &quot;is_active&quot;: binding.is_active,
+            &quot;created_at&quot;: binding.created_at,
+            &quot;last_connect_time&quot;: binding.last_connect_time,
+            &quot;permission_start_date&quot;: binding.permission_start_date,
+            &quot;permission_end_date&quot;: binding.permission_end_date,
+            &quot;max_daily_uses&quot;: binding.max_daily_uses,
+        }
+        
+        # 统计今日使用次数（从AccessLog）
+        daily_count = db.query(AccessLog).filter(
+            AccessLog.user_id == binding.user_id,
+            AccessLog.access_type == &quot;bluetooth&quot;,
+            AccessLog.status == &quot;success&quot;,
+            AccessLog.timestamp &gt;= today_start,
+            AccessLog.details.like(f&quot;%{binding.device_id}%&quot;)
+        ).count()
+        binding_dict[&quot;daily_use_count&quot;] = daily_count
+        
+        # 获取最后使用时间（从AccessLog）
+        last_log = db.query(AccessLog).filter(
+            AccessLog.user_id == binding.user_id,
+            AccessLog.access_type == &quot;bluetooth&quot;,
+            AccessLog.status == &quot;success&quot;,
+            AccessLog.details.like(f&quot;%{binding.device_id}%&quot;)
+        ).order_by(AccessLog.timestamp.desc()).first()
+        
+        binding_dict[&quot;last_use_date&quot;] = last_log.timestamp if last_log else None
+        
+        result.append(binding_dict)
+    
+    return result
+
+
+@router.put(&quot;/bluetooth/binding/{binding_id}&quot;, response_model=BluetoothBindingResponse)
+def update_bluetooth_binding(binding_id: int, binding_update: BluetoothBindingUpdate, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;更新蓝牙设备绑定&quot;&quot;&quot;
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail=&quot;绑定不存在&quot;)
+    
+    if binding_update.device_name:
+        binding.device_name = binding_update.device_name
+    if binding_update.is_active is not None:
+        binding.is_active = binding_update.is_active
+    if binding_update.is_paired is not None:
+        binding.is_paired = binding_update.is_paired
+    if binding_update.permission_end_date is not None:
+        binding.permission_end_date = binding_update.permission_end_date
+    if binding_update.max_daily_uses is not None:
+        binding.max_daily_uses = binding_update.max_daily_uses
+    
+    db.commit()
+    db.refresh(binding)
+    return binding
+
+
+@router.delete(&quot;/bluetooth/binding/{binding_id}&quot;)
+def delete_bluetooth_binding(binding_id: int, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;删除蓝牙设备绑定&quot;&quot;&quot;
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail=&quot;绑定不存在&quot;)
+    
+    db.delete(binding)
+    db.commit()
+    return {&quot;message&quot;: &quot;绑定已删除&quot;}
+
+
+class BluetoothScanReport(BaseModel):
+    &quot;&quot;&quot;蓝牙扫描上报数据模型（单个设备）&quot;&quot;&quot;
+    mac: str
+    rssi: int
+    device_id: str
+    name: Optional[str] = None
+
+
+class BluetoothBatchScanReport(BaseModel):
+    &quot;&quot;&quot;蓝牙批量扫描上报数据模型&quot;&quot;&quot;
+    devices: list
+    device_id: str
+
+
+@router.post(&quot;/bluetooth/report-scan&quot;)
+def report_bluetooth_scan(report: BluetoothScanReport):
+    &quot;&quot;&quot;ESP32上报扫描到的蓝牙设备（单个）&quot;&quot;&quot;
+    global bluetooth_scan_cache
+    
+    # 更新缓存
+    bluetooth_scan_cache[report.mac.upper()] = {
+        &quot;mac&quot;: report.mac.upper(),
+        &quot;name&quot;: report.name or f&quot;BLE-{report.mac[-8:]}&quot;,
+        &quot;rssi&quot;: report.rssi,
+        &quot;device_id&quot;: report.device_id,  # 上报设备ID
+        &quot;timestamp&quot;: time.time(),
+        &quot;last_seen&quot;: datetime.utcnow().isoformat()
+    }
+    
+    return {&quot;status&quot;: &quot;ok&quot;, &quot;cached_devices&quot;: len(bluetooth_scan_cache)}
+
+
+@router.post(&quot;/bluetooth/report-scan-batch&quot;)
+def report_bluetooth_scan_batch(report: BluetoothBatchScanReport):
+    &quot;&quot;&quot;ESP32批量上报扫描到的蓝牙设备&quot;&quot;&quot;
+    global bluetooth_scan_cache
+    
+    # 批量更新缓存
+    current_time = time.time()
+    for device in report.devices:
+        mac = device.get(&quot;mac&quot;, &quot;&quot;).upper()
+        if mac:
+            bluetooth_scan_cache[mac] = {
+                &quot;mac&quot;: mac,
+                &quot;name&quot;: device.get(&quot;name&quot;) or f&quot;BLE-{mac[-8:]}&quot;,
+                &quot;rssi&quot;: device.get(&quot;rssi&quot;, -100),
+                &quot;device_id&quot;: report.device_id,
+                &quot;timestamp&quot;: current_time,
+                &quot;last_seen&quot;: datetime.utcnow().isoformat()
+            }
+    
+    return {&quot;status&quot;: &quot;ok&quot;, &quot;received&quot;: len(report.devices), &quot;cached_devices&quot;: len(bluetooth_scan_cache)}
+
+
+@router.get(&quot;/bluetooth/scan&quot;)
+def scan_bluetooth_devices():
+    &quot;&quot;&quot;获取最近扫描到的蓝牙设备（从缓存）&quot;&quot;&quot;
+    global bluetooth_scan_cache
+    
+    # 清理过期缓存
+    current_time = time.time()
+    expired_keys = [
+        mac for mac, data in bluetooth_scan_cache.items()
+        if current_time - data.get(&quot;timestamp&quot;, 0) &gt; CACHE_EXPIRE_SECONDS
+    ]
+    for key in expired_keys:
+        del bluetooth_scan_cache[key]
+    
+    # 返回所有有效设备，按RSSI排序（信号强的在前）
+    devices = sorted(
+        bluetooth_scan_cache.values(),
+        key=lambda x: x.get(&quot;rssi&quot;, -100),
+        reverse=True
+    )
+    
+    return devices
+
+
+@router.post(&quot;/bluetooth/verify&quot;)
+def verify_bluetooth_device(
+    device_id: str = Body(...),
+    bt_mac: str = Body(...),
+    rssi: int = Body(...),
+    device_irk: Optional[str] = Body(None),  # 配对后的IRK识别
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;验证蓝牙设备权限 - 硬件轮询用（支持MAC和IRK识别）&quot;&quot;&quot;
+    bt_mac_upper = bt_mac.upper()
+    
+    # ✅ 检查冷却期（3分钟内已开过门）
+    current_time = time.time()
+    cache_key = device_irk if device_irk else bt_mac_upper
+    
+    if cache_key in bluetooth_cooldown_cache:
+        last_open_time = bluetooth_cooldown_cache[cache_key]
+        time_since_last_open = current_time - last_open_time
+        
+        if time_since_last_open &lt; COOLDOWN_PERIOD_SECONDS:
+            # 仍在冷却期内
+            remaining_seconds = int(COOLDOWN_PERIOD_SECONDS - time_since_last_open)
+            remaining_minutes = remaining_seconds // 60
+            remaining_secs = remaining_seconds % 60
+            
+            return {
+                &quot;allow&quot;: False,
+                &quot;user_name&quot;: &quot;Cooldown&quot;,
+                &quot;reason&quot;: &quot;In cooldown period&quot;,
+                &quot;in_cooldown&quot;: True,
+                &quot;cooldown_remaining_seconds&quot;: remaining_seconds,
+                &quot;cooldown_remaining_text&quot;: f&quot;{remaining_minutes}分{remaining_secs}秒&quot;
+            }
+    
+    binding = None
+    
+    # 🔐 优先使用IRK识别（配对设备）
+    if device_irk:
+        pairing_record = db.query(BluetoothPairingRecord).filter(
+            BluetoothPairingRecord.device_irk == device_irk.upper()
+        ).first()
+        
+        if pairing_record:
+            binding = pairing_record.binding
+            # 更新连接信息
+            pairing_record.last_connection = datetime.utcnow()
+            pairing_record.connection_count += 1
+            db.commit()
+    
+    # 降级到MAC识别（未配对或配对失败）
+    if not binding:
+        binding = db.query(BluetoothBinding).filter(
+            BluetoothBinding.device_id == bt_mac_upper,
+            BluetoothBinding.is_active == True
+        ).first()
+    
+    if not binding:
+        return {&quot;allow&quot;: False, &quot;user_name&quot;: &quot;Unknown&quot;, &quot;reason&quot;: &quot;Device not bound&quot;, &quot;in_cooldown&quot;: False}
+    
+    # 检查权限是否有效
+    if not check_permission_valid(binding.permission_start_date, binding.permission_end_date):
+        return {&quot;allow&quot;: False, &quot;user_name&quot;: binding.user.username if binding.user else &quot;Unknown&quot;, &quot;reason&quot;: &quot;Permission expired&quot;, &quot;in_cooldown&quot;: False}
+    
+    # 检查每日使用次数限制
+    if binding.max_daily_uses &gt; 0:
+        # 计算今天的使用次数
+        today = datetime.utcnow().date()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_count = db.query(AccessLog).filter(
+            AccessLog.device_id == device_id,
+            AccessLog.user_id == binding.user_id,
+            AccessLog.access_type == &quot;bluetooth&quot;,
+            AccessLog.timestamp &gt;= today_start
+        ).count()
+        
+        if today_count &gt;= binding.max_daily_uses:
+            return {&quot;allow&quot;: False, &quot;user_name&quot;: binding.user.username if binding.user else &quot;Unknown&quot;, &quot;reason&quot;: &quot;Daily limit reached&quot;, &quot;in_cooldown&quot;: False}
+    
+    # 权限有效，允许开门
+    user_name = binding.user.username if binding.user else f&quot;User{binding.user_id}&quot;
+    return {
+        &quot;allow&quot;: True,
+        &quot;user_name&quot;: user_name,
+        &quot;user_id&quot;: binding.user_id,
+        &quot;binding_id&quot;: binding.id,
+        &quot;rssi&quot;: rssi,
+        &quot;in_cooldown&quot;: False
+    }
+
+
+@router.post(&quot;/bluetooth/unlock&quot;)
+def bluetooth_unlock(user_id: int, device_id: str, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;蓝牙远程开锁&quot;&quot;&quot;
+    binding = db.query(BluetoothBinding).filter(
+        BluetoothBinding.user_id == user_id,
+        BluetoothBinding.device_id == device_id
+    ).first()
+    
+    if not binding:
+        return {&quot;status&quot;: &quot;failed&quot;, &quot;message&quot;: &quot;设备绑定不存在&quot;}
+    
+    if not binding.is_active:
+        return {&quot;status&quot;: &quot;denied&quot;, &quot;message&quot;: &quot;绑定已被禁用&quot;}
+    
+    if not check_permission_valid(binding.permission_start_date, binding.permission_end_date):
+        return {&quot;status&quot;: &quot;denied&quot;, &quot;message&quot;: &quot;权限已过期&quot;}
+    
+    # 这里可以调用实际的硬件开锁接口
+    # TODO: 添加硬件开锁实现
+    
+    binding.daily_use_count += 1
+    binding.last_use_date = datetime.utcnow()
+    
+    access_log = AccessLog(
+        user_id=user_id,
+        access_type=&quot;bluetooth&quot;,
+        status=&quot;success&quot;,
+        device_id=device_id,
+        details=&quot;Bluetooth remote unlock&quot;
+    )
+    db.add(access_log)
+    db.commit()
+    
+    return {
+        &quot;status&quot;: &quot;success&quot;,
+        &quot;message&quot;: &quot;开锁成功&quot;,
+        &quot;device_id&quot;: device_id,
+        &quot;timestamp&quot;: datetime.utcnow()
+    }
+
+
+@router.post(&quot;/bluetooth/pairing-mode&quot;)
+def enable_bluetooth_pairing(device_id: str, duration_seconds: int = 300, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;启用蓝牙配对模式（供硬件调用）&quot;&quot;&quot;
+    # 这是一个硬件设备调用的接口，用于启用配对模式
+    # TODO: 实现硬件蓝牙配对逻辑
+    
+    return {
+        &quot;status&quot;: &quot;pairing_mode_enabled&quot;,
+        &quot;device_id&quot;: device_id,
+        &quot;duration&quot;: duration_seconds,
+        &quot;expires_at&quot;: datetime.utcnow() + timedelta(seconds=duration_seconds)
+    }
+
+
+@router.post(&quot;/bluetooth/access-log&quot;)
+def record_bluetooth_access_log(
+    device_id: str = Body(...),
+    bt_mac: str = Body(...),
+    access_type: str = Body(...),
+    status: str = Body(...),
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;记录蓝牙设备访问日志&quot;&quot;&quot;
+    bt_mac_upper = bt_mac.upper()
+    
+    # 查询绑定信息获取user_id
+    binding = db.query(BluetoothBinding).filter(
+        BluetoothBinding.device_id == bt_mac_upper
+    ).first()
+    
+    if binding:
+        access_log = AccessLog(
+            user_id=binding.user_id,
+            access_type=access_type,
+            status=status,
+            device_id=device_id,
+            details=f&quot;Bluetooth {access_type}: {bt_mac}&quot;
+        )
+        db.add(access_log)
+        db.commit()
+        
+        # ✅ 开门成功后，记录冷却期（3分钟）
+        if status == &quot;success&quot;:
+            bluetooth_cooldown_cache[bt_mac_upper] = time.time()
+            print(f&quot;[Cooldown] 添加设备到冷却期: {bt_mac_upper} (3分钟)&quot;)
+        
+        return {&quot;status&quot;: &quot;logged&quot;, &quot;log_id&quot;: access_log.id}
+    
+    return {&quot;status&quot;: &quot;device_not_found&quot;}
+
+
+# ==================== 访问日志管理 ====================
+
+@router.get(&quot;/logs&quot;, response_model=List[AccessLogResponse])
+def get_access_logs(
+    skip: int = 0,
+    limit: int = 100,
+    access_type: Optional[str] = None,
+    status: Optional[str] = None,
+    days: int = 7,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;获取访问日志&quot;&quot;&quot;
+    query = db.query(AccessLog)
+    
+    # 按时间范围筛选
+    start_date = datetime.utcnow() - timedelta(days=days)
+    query = query.filter(AccessLog.timestamp &gt;= start_date)
+    
+    if access_type:
+        query = query.filter(AccessLog.access_type == access_type)
+    if status:
+        query = query.filter(AccessLog.status == status)
+    
+    logs = query.order_by(AccessLog.timestamp.desc()).offset(skip).limit(limit).all()
+    return logs
+
+
+@router.get(&quot;/logs/user/{user_id}&quot;, response_model=List[AccessLogResponse])
+def get_user_logs(user_id: int, limit: int = 50, days: int = 30, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;获取用户的访问日志&quot;&quot;&quot;
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=&quot;用户不存在&quot;)
+    
+    start_date = datetime.utcnow() - timedelta(days=days)
+    logs = db.query(AccessLog).filter(
+        AccessLog.user_id == user_id,
+        AccessLog.timestamp &gt;= start_date
+    ).order_by(AccessLog.timestamp.desc()).limit(limit).all()
+    return logs
+
+
+@router.get(&quot;/logs/device/{device_id}&quot;, response_model=List[AccessLogResponse])
+def get_device_logs(device_id: str, limit: int = 50, days: int = 30, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;获取设备的访问日志&quot;&quot;&quot;
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device_id
+    ).first()
+    if not device:
+        raise HTTPException(status_code=404, detail=&quot;设备不存在&quot;)
+    
+    start_date = datetime.utcnow() - timedelta(days=days)
+    logs = db.query(AccessLog).filter(
+        AccessLog.device_id == device_id,
+        AccessLog.timestamp &gt;= start_date
+    ).order_by(AccessLog.timestamp.desc()).limit(limit).all()
+    return logs
+
+
+@router.get(&quot;/logs/statistics&quot;)
+def get_access_statistics(
+    days: int = 30,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;获取访问统计信息&quot;&quot;&quot;
+    start_date = datetime.utcnow() - timedelta(days=days)
+    
+    total_accesses = db.query(AccessLog).filter(AccessLog.timestamp &gt;= start_date).count()
+    success_accesses = db.query(AccessLog).filter(
+        AccessLog.timestamp &gt;= start_date,
+        AccessLog.status == &quot;success&quot;
+    ).count()
+    failed_accesses = db.query(AccessLog).filter(
+        AccessLog.timestamp &gt;= start_date,
+        AccessLog.status == &quot;failed&quot;
+    ).count()
+    denied_accesses = db.query(AccessLog).filter(
+        AccessLog.timestamp &gt;= start_date,
+        AccessLog.status == &quot;denied&quot;
+    ).count()
+    
+    # 按访问类型统计
+    access_types = db.query(
+        AccessLog.access_type,
+        __import__(&#39;sqlalchemy&#39;).func.count(AccessLog.id).label(&#39;count&#39;)
+    ).filter(AccessLog.timestamp &gt;= start_date).group_by(AccessLog.access_type).all()
+    
+    return {
+        &quot;period_days&quot;: days,
+        &quot;start_date&quot;: start_date,
+        &quot;end_date&quot;: datetime.utcnow(),
+        &quot;total_accesses&quot;: total_accesses,
+        &quot;success_accesses&quot;: success_accesses,
+        &quot;failed_accesses&quot;: failed_accesses,
+        &quot;denied_accesses&quot;: denied_accesses,
+        &quot;success_rate&quot;: f&quot;{(success_accesses / total_accesses * 100) if total_accesses &gt; 0 else 0:.2f}%&quot;,
+        &quot;access_by_type&quot;: {item[0]: item[1] for item in access_types}
+    }
+
+
+# ==================== 统一远程开门接口 ====================
+
+class RemoteUnlockRequest(BaseModel):
+    &quot;&quot;&quot;远程开门请求&quot;&quot;&quot;
+    device_id: str  # 设备ID，例如 &quot;nfc_reader_01&quot;
+    door_id: str = &quot;door1&quot;  # 门编号：door1 或 door2
+    user_id: Optional[int] = None  # 触发开门的用户ID（用于记录日志）
+    reason: Optional[str] = &quot;remote_unlock&quot;  # 开门原因
+
+
+@router.post(&quot;/remote-unlock&quot;)
+def remote_unlock_door(
+    request: RemoteUnlockRequest,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;
+    统一远程开门接口
+    
+    功能：
+    - 向指定硬件设备发送开门命令
+    - 支持人脸识别、蓝牙、管理员等多种方式调用
+    - 记录开门日志
+    
+    参数：
+    - device_id: 硬件设备ID
+    - door_id: 门编号 (door1/door2)
+    - user_id: 用户ID（可选，用于日志记录）
+    - reason: 开门原因（可选，用于日志记录）
+    &quot;&quot;&quot;
+    
+    # 检查设备是否存在
+    device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == request.device_id
+    ).first()
+    
+    if not device:
+        raise HTTPException(status_code=404, detail=f&quot;设备 {request.device_id} 不存在&quot;)
+    
+    if not device.is_active:
+        raise HTTPException(status_code=400, detail=f&quot;设备 {request.device_id} 未激活&quot;)
+    
+    try:
+        # 创建开门任务
+        task = NFCTask(
+            device_id=request.device_id,
+            command=&quot;OPEN&quot;,
+            payload=f&#39;{{&quot;door_id&quot;: &quot;{request.door_id}&quot;}}&#39;,
+            status=&quot;pending&quot;,
+            created_at=datetime.utcnow()
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        task_id = task.id  # 立即保存ID，防止后续session失效
+        
+        # 记录访问日志
+        if request.user_id:
+            try:
+                user = db.query(User).filter(User.id == request.user_id).first()
+                if user:
+                    # 截断 access_type 以适应数据库字段 (String(20))
+                    access_type = request.reason[:20] if request.reason else &quot;remote_unlock&quot;
+                    
+                    log = AccessLog(
+                        user_id=request.user_id,
+                        access_type=access_type,
+                        status=&quot;success&quot;,
+                        timestamp=datetime.utcnow(),
+                        device_id=request.device_id,
+                        details=f&quot;远程开门: {request.door_id}, 原因: {request.reason}&quot;
+                    )
+                    db.add(log)
+                    db.commit()
+            except Exception as log_error:
+                print(f&quot;Log recording failed: {str(log_error)}&quot;)
+                # 日志记录失败不影响开门任务
+        
+        return {
+            &quot;status&quot;: &quot;success&quot;,
+            &quot;message&quot;: f&quot;开门命令已发送到设备 {request.device_id}&quot;,
+            &quot;task_id&quot;: task_id,
+            &quot;device_id&quot;: request.device_id,
+            &quot;door_id&quot;: request.door_id,
+            &quot;timestamp&quot;: datetime.utcnow()
+        }
+    except Exception as e:
+        print(f&quot;Remote unlock error: {str(e)}&quot;)
+        # 如果任务已创建但后续失败，仍返回成功但带有警告
+        if &#39;task_id&#39; in locals() and task_id:
+            return {
+                &quot;status&quot;: &quot;success&quot;,
+                &quot;message&quot;: f&quot;开门命令已发送，但发生错误: {str(e)}&quot;,
+                &quot;task_id&quot;: task_id,
+                &quot;device_id&quot;: request.device_id,
+                &quot;warning&quot;: str(e)
+            }
+        raise HTTPException(status_code=500, detail=f&quot;Internal Server Error: {str(e)}&quot;)
+
+
+# ==================== NFC 任务队列管理 ====================
+
+class NFCTaskResponse(BaseModel):
+    &quot;&quot;&quot;NFC任务响应模型&quot;&quot;&quot;
+    id: int
+    device_id: str
+    command: str
+    payload: Optional[str]
+    status: str
+    result: Optional[str]
+    created_at: datetime
+    sent_at: Optional[datetime]
+    consumed_at: Optional[datetime]
+    
+    class Config:
+        orm_mode = True
+
+
+@router.get(&quot;/tasks&quot;, response_model=List[NFCTaskResponse])
+def get_nfc_tasks(
+    device_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;
+    查看NFC任务队列
+    
+    参数:
+    - device_id: 设备ID（可选）
+    - status: 任务状态（可选）：pending, sent, done, canceled
+    - limit: 返回数量限制
+    &quot;&quot;&quot;
+    query = db.query(NFCTask)
+    
+    if device_id:
+        query = query.filter(NFCTask.device_id == device_id)
+    if status:
+        query = query.filter(NFCTask.status == status)
+    
+    tasks = query.order_by(NFCTask.created_at.desc()).limit(limit).all()
+    return tasks
+
+
+@router.get(&quot;/tasks/stats&quot;)
+def get_tasks_statistics(
+    device_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;获取任务队列统计信息&quot;&quot;&quot;
+    query = db.query(NFCTask)
+    
+    if device_id:
+        query = query.filter(NFCTask.device_id == device_id)
+    
+    total = query.count()
+    pending = query.filter(NFCTask.status == &quot;pending&quot;).count()
+    sent = query.filter(NFCTask.status == &quot;sent&quot;).count()
+    done = query.filter(NFCTask.status == &quot;done&quot;).count()
+    canceled = query.filter(NFCTask.status == &quot;canceled&quot;).count()
+    
+    return {
+        &quot;total&quot;: total,
+        &quot;pending&quot;: pending,
+        &quot;sent&quot;: sent,
+        &quot;done&quot;: done,
+        &quot;canceled&quot;: canceled,
+        &quot;device_id&quot;: device_id
+    }
+
+
+@router.delete(&quot;/tasks/clear&quot;)
+def clear_nfc_tasks(
+    device_id: Optional[str] = None,
+    status: Optional[str] = None,
+    older_than_hours: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    &quot;&quot;&quot;
+    清除NFC任务队列
+    
+    参数:
+    - device_id: 设备ID（可选，不指定则清除所有设备）
+    - status: 任务状态（可选，不指定则清除所有状态）
+    - older_than_hours: 清除多少小时之前的任务（可选）
+    &quot;&quot;&quot;
+    query = db.query(NFCTask)
+    
+    if device_id:
+        query = query.filter(NFCTask.device_id == device_id)
+    
+    if status:
+        query = query.filter(NFCTask.status == status)
+    
+    if older_than_hours:
+        cutoff_time = datetime.utcnow() - timedelta(hours=older_than_hours)
+        query = query.filter(NFCTask.created_at &lt; cutoff_time)
+    
+    # 统计将要删除的任务数量
+    count = query.count()
+    
+    # 执行删除
+    query.delete(synchronize_session=False)
+    db.commit()
+    
+    return {
+        &quot;status&quot;: &quot;success&quot;,
+        &quot;message&quot;: f&quot;已清除 {count} 个任务&quot;,
+        &quot;deleted_count&quot;: count,
+        &quot;device_id&quot;: device_id,
+        &quot;status_filter&quot;: status,
+        &quot;older_than_hours&quot;: older_than_hours
+    }
+
+
+@router.delete(&quot;/tasks/{task_id}&quot;)
+def delete_nfc_task(task_id: int, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;删除指定的NFC任务&quot;&quot;&quot;
+    task = db.query(NFCTask).filter(NFCTask.id == task_id).first()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail=&quot;任务不存在&quot;)
+    
+    db.delete(task)
+    db.commit()
+    
+    return {
+        &quot;status&quot;: &quot;success&quot;,
+        &quot;message&quot;: f&quot;任务 {task_id} 已删除&quot;,
+        &quot;task_id&quot;: task_id
+    }
+
+
+# ==================== 蓝牙配对管理 ====================
+
+@router.post(&quot;/bluetooth/pairing/start&quot;)
+def start_bluetooth_pairing(request: StartPairingRequest, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;开始蓝牙配对模式
+    行为：
+    - 校验绑定是否存在
+    - 如提供 controller_device_id，则向该设备投递 NFCTask（命令：BLE_PAIRING_START），
+      负载包含 binding_id 与 timeout_seconds，期望硬件据此进入 BLE 可发现/配对模式。
+    - 如未提供 controller_device_id，仅返回提示信息（与旧行为兼容）。
+    &quot;&quot;&quot;
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == request.binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail=&quot;绑定不存在&quot;)
+
+    task_id = None
+    controller_status = None
+    if request.controller_device_id:
+        controller = db.query(HardwareDevice).filter(HardwareDevice.device_id == request.controller_device_id).first()
+        if not controller:
+            raise HTTPException(status_code=404, detail=f&quot;门禁控制器 {request.controller_device_id} 不存在&quot;)
+        if controller.is_active is False:
+            controller_status = &quot;inactive&quot;
+
+        # 通过 NFCTask 队列向设备下发配对指令
+        try:
+            payload = {
+                &quot;action&quot;: &quot;ble_pairing_start&quot;,
+                &quot;binding_id&quot;: request.binding_id,
+                &quot;timeout_seconds&quot;: request.timeout_seconds
+            }
+            task = NFCTask(
+                device_id=request.controller_device_id,
+                command=&quot;BLE_PAIRING_START&quot;,
+                payload=__import__(&#39;json&#39;).dumps(payload),
+                status=&quot;pending&quot;,
+                created_at=datetime.utcnow()
+            )
+            db.add(task)
+            db.commit()
+            db.refresh(task)
+            task_id = task.id
+        except Exception as e:
+            # 若下发任务失败，返回可诊断信息
+            raise HTTPException(status_code=500, detail=f&quot;下发配对任务失败: {str(e)}&quot;)
+
+    return {
+        &quot;status&quot;: &quot;pairing_mode_activated&quot;,
+        &quot;binding_id&quot;: binding.id,
+        &quot;device_id&quot;: binding.device_id,
+        &quot;device_name&quot;: binding.device_name,
+        &quot;pairing_method&quot;: &quot;numeric_comparison&quot;,
+        &quot;timeout_seconds&quot;: request.timeout_seconds,
+        &quot;controller_device_id&quot;: request.controller_device_id,
+        &quot;task_id&quot;: task_id,
+        &quot;controller_status&quot;: controller_status,
+        &quot;message&quot;: &quot;如提供 controller_device_id，则已向设备下发进入配对模式任务；否则仅返回提示信息。&quot;
+    }
+
+
+@router.post(&quot;/bluetooth/pairing/complete&quot;, response_model=BluetoothPairingRecordResponse)
+def complete_bluetooth_pairing(request: CompletePairingRequest, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;完成蓝牙配对 - 保存IRK和LTK&quot;&quot;&quot;
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == request.binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail=&quot;绑定不存在&quot;)
+    
+    # 删除旧的配对记录（如果存在）
+    db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == request.binding_id
+    ).delete()
+    
+    # 创建新的配对记录
+    pairing_record = BluetoothPairingRecord(
+        binding_id=request.binding_id,
+        device_irk=request.device_irk.upper(),
+        device_ltk=request.device_ltk.upper(),
+        device_name=request.device_name,
+        pairing_method=&quot;numeric_comparison&quot;,
+        firmware_version=request.firmware_version,
+        connection_count=1,
+        last_connection=datetime.utcnow()
+    )
+    
+    db.add(pairing_record)
+    
+    # 更新binding为已配对状态
+    binding.is_paired = True
+    binding.device_name = request.device_name
+    binding.last_connect_time = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(pairing_record)
+    
+    return pairing_record
+
+
+@router.get(&quot;/bluetooth/pairing/{binding_id}&quot;, response_model=BluetoothPairingRecordResponse)
+def get_pairing_record(binding_id: int, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;获取蓝牙配对记录&quot;&quot;&quot;
+    pairing_record = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == binding_id
+    ).first()
+    
+    if not pairing_record:
+        raise HTTPException(status_code=404, detail=&quot;配对记录不存在&quot;)
+    
+    return pairing_record
+
+
+@router.get(&quot;/bluetooth/pairings/{binding_id}&quot;)
+def list_pairing_records(binding_id: int, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;获取绑定的所有配对记录&quot;&quot;&quot;
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == binding_id).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail=&quot;绑定不存在&quot;)
+    
+    records = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == binding_id
+    ).order_by(BluetoothPairingRecord.pairing_timestamp.desc()).all()
+    
+    return records
+
+
+@router.post(&quot;/bluetooth/pairing/verify-irk&quot;)
+def verify_device_by_irk(irk: str = Query(...), db: Session = Depends(get_db)):
+    &quot;&quot;&quot;使用IRK验证蓝牙设备身份&quot;&quot;&quot;
+    irk_upper = irk.upper()
+    
+    # 查找匹配的配对记录
+    pairing_record = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.device_irk == irk_upper
+    ).first()
+    
+    if not pairing_record:
+        return {&quot;verified&quot;: False, &quot;message&quot;: &quot;IRK未找到&quot;}
+    
+    # 更新连接统计
+    pairing_record.last_connection = datetime.utcnow()
+    pairing_record.connection_count += 1
+    db.commit()
+    
+    binding = pairing_record.binding
+    return {
+        &quot;verified&quot;: True,
+        &quot;binding_id&quot;: binding.id,
+        &quot;user_id&quot;: binding.user_id,
+        &quot;device_name&quot;: binding.device_name,
+        &quot;last_connection&quot;: pairing_record.last_connection,
+        &quot;connection_count&quot;: pairing_record.connection_count
+    }
+
+
+@router.delete(&quot;/bluetooth/pairing/{binding_id}&quot;)
+def delete_pairing_record(binding_id: int, db: Session = Depends(get_db)):
+    &quot;&quot;&quot;删除蓝牙配对记录 - 解除配对&quot;&quot;&quot;
+    pairing_record = db.query(BluetoothPairingRecord).filter(
+        BluetoothPairingRecord.binding_id == binding_id
+    ).first()
+    
+    if not pairing_record:
+        raise HTTPException(status_code=404, detail=&quot;配对记录不存在&quot;)
+    
+    db.delete(pairing_record)
+    
+    # 更新binding状态
+    binding = db.query(BluetoothBinding).filter(BluetoothBinding.id == binding_id).first()
+    if binding:
+        binding.is_paired = False
+    
+    db.commit()
+    
+    return {&quot;status&quot;: &quot;success&quot;, &quot;message&quot;: &quot;配对记录已删除&quot;}
+

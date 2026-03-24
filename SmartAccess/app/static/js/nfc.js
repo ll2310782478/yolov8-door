@@ -38,7 +38,7 @@ async function fetchDevices(){
 async function fetchCards(){
   const res = await fetch(apiBase + '/nfc/cards');
   const cards = await res.json();
-  const tbody = document.querySelector('#cardsTable tbody');
+  const tbody = document.getElementById('cardsTable');
   
   if(cards.length === 0){
     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#718096;">暂无卡片数据</td></tr>';

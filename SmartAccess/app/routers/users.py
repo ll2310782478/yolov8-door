@@ -8,9 +8,10 @@ from app.utils import (
     check_permission_valid, check_time_period_valid, check_daily_limit,
     save_file, delete_file
 )
-from app.auth import get_password_hash
+from app.auth import get_password_hash, get_current_user, require_role, TokenData
 from app.services.face_recognition import get_face_service
 from datetime import datetime
+from app.time_utils import now_utc8
 from typing import List, Optional
 from pydantic import BaseModel
 import numpy as np
@@ -33,6 +34,7 @@ class UserCreate(BaseModel):
     email: str = None
     phone: str = None
     full_name: str = None
+    user_role: str = "access_user"  # admin, access_user
 
 
 class UserUpdate(BaseModel):
@@ -40,6 +42,7 @@ class UserUpdate(BaseModel):
     phone: str = None
     full_name: str = None
     is_active: bool = None
+    user_role: str = None
 
 
 class UserResponse(BaseModel):
@@ -48,6 +51,7 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     full_name: Optional[str] = None
+    user_role: str = "access_user"
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -109,9 +113,10 @@ def list_users(
     skip: int = 0,
     limit: int = 100,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role("admin"))
 ):
-    """获取用户列表"""
+    """获取用户列表（仅管理员）"""
     query = db.query(User)
     
     if is_active is not None:
@@ -122,8 +127,8 @@ def list_users(
 
 
 @router.get("/{user_id}", response_model=UserResponse)
-def get_user(user_id: int, db: Session = Depends(get_db)):
-    """获取用户详情"""
+def get_user(user_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """获取用户详情（仅管理员）"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -131,11 +136,15 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/", response_model=UserResponse)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    """创建用户"""
+def create_user(user: UserCreate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """创建用户（仅管理员）"""
     existing = db.query(User).filter(User.username == user.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="用户名已存在")
+    
+    # 校验角色值
+    if user.user_role not in ("admin", "access_user"):
+        raise HTTPException(status_code=400, detail="无效的角色类型，可选: admin, access_user")
     
     db_user = User(
         username=user.username,
@@ -143,6 +152,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         email=user.email,
         phone=user.phone,
         full_name=user.full_name,
+        user_role=user.user_role,
     )
     db.add(db_user)
     db.flush()
@@ -163,8 +173,8 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{user_id}", response_model=UserResponse)
-def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get_db)):
-    """更新用户信息"""
+def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """更新用户信息（仅管理员）"""
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -177,6 +187,10 @@ def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get
         db_user.full_name = user_update.full_name
     if user_update.is_active is not None:
         db_user.is_active = user_update.is_active
+    if user_update.user_role:
+        if user_update.user_role not in ("admin", "access_user"):
+            raise HTTPException(status_code=400, detail="无效的角色类型")
+        db_user.user_role = user_update.user_role
     
     db.commit()
     db.refresh(db_user)
@@ -184,8 +198,8 @@ def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db)):
-    """删除用户"""
+def delete_user(user_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """删除用户（仅管理员）"""
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -208,7 +222,8 @@ async def upload_face(
     is_primary: bool = False,
     permission_end_date: Optional[datetime] = None,
     max_daily_uses: int = 0,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role("admin"))
 ):
     """上传用户人脸 - 集成 face_access-v2 人脸识别
     
@@ -313,7 +328,7 @@ async def upload_face(
             image_path=file_path,
             embedding_data=embedding_bytes,  # 存储 InsightFace 特征向量
             is_primary=is_primary,
-            permission_start_date=datetime.utcnow(),
+            permission_start_date=now_utc8(),
             permission_end_date=permission_end_date,
             max_daily_uses=max_daily_uses,
         )
@@ -338,8 +353,8 @@ async def upload_face(
 
 
 @router.get("/{user_id}/faces", response_model=List[FaceDataResponse])
-def list_user_faces(user_id: int, db: Session = Depends(get_db)):
-    """获取用户的所有人脸"""
+def list_user_faces(user_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """获取用户的所有人脸（仅管理员）"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -349,8 +364,8 @@ def list_user_faces(user_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/face/{face_id}", response_model=FaceDataResponse)
-def get_face(face_id: int, db: Session = Depends(get_db)):
-    """获取人脸详情"""
+def get_face(face_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """获取人脸详情（仅管理员）"""
     face = db.query(FaceData).filter(FaceData.id == face_id).first()
     if not face:
         raise HTTPException(status_code=404, detail="人脸不存在")
@@ -358,8 +373,8 @@ def get_face(face_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/face/{face_id}", response_model=FaceDataResponse)
-def update_face(face_id: int, face_update: FaceDataUpdate, db: Session = Depends(get_db)):
-    """更新人脸信息（权限、时效等）"""
+def update_face(face_id: int, face_update: FaceDataUpdate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """更新人脸信息（仅管理员）"""
     face = db.query(FaceData).filter(FaceData.id == face_id).first()
     if not face:
         raise HTTPException(status_code=404, detail="人脸不存在")
@@ -390,8 +405,8 @@ def update_face(face_id: int, face_update: FaceDataUpdate, db: Session = Depends
 
 
 @router.delete("/{user_id}/faces/{face_id}")
-def delete_face(user_id: int, face_id: int, db: Session = Depends(get_db)):
-    """删除人脸"""
+def delete_face(user_id: int, face_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """删除人脸（仅管理员）"""
     face = db.query(FaceData).filter(
         FaceData.id == face_id,
         FaceData.user_id == user_id
@@ -801,3 +816,4 @@ def batch_update_permissions(
         "updated_count": len(updated),
         "updated_types": updated
     }
+

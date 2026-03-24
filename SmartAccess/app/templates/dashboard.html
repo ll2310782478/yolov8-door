@@ -1,13 +1,13 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SmartAccess 数据仪表盘</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SmartAccess - 数据仪表盘</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="/static/js/common.js"></script>
-      <style>
-
+  <link rel="stylesheet" href="/static/css/common.css">
+  <style>
     /* 左侧导航栏 */
     .sidebar-header .icon { font-size: 1.8rem; }
     .sidebar-header .title {
@@ -30,6 +30,7 @@
       transition: opacity 0.3s;
     }
     .sidebar.collapsed .nav-link .label { opacity: 0; width: 0; overflow: hidden; }
+    
     /* 主内容区 */
     .topbar {
       background: #fff;
@@ -41,96 +42,201 @@
     }
     .user-actions { display: flex; gap: 0.75rem; align-items: center; }
     .user-actions span { color: var(--text-muted); }
-    /* 统计卡片 */
+
+    /* =========== 统计卡片（6 列） =========== */
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 1.25rem;
-      margin-bottom: 2rem;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.5rem;
     }
     .stat-card {
       background: #fff;
-      padding: 1.5rem;
-      border-radius: 12px;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+      padding: 1.25rem 1.5rem;
+      border-radius: 14px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.05);
       display: flex;
       gap: 1rem;
+      align-items: center;
+      position: relative;
+      overflow: hidden;
       transition: transform 0.2s, box-shadow 0.2s;
     }
     .stat-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+      transform: translateY(-3px);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.1);
     }
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 4px; height: 100%;
+      border-radius: 14px 0 0 14px;
+    }
+    .stat-card.c-blue::before   { background: linear-gradient(180deg, #667eea, #764ba2); }
+    .stat-card.c-green::before  { background: linear-gradient(180deg, #10b981, #059669); }
+    .stat-card.c-amber::before  { background: linear-gradient(180deg, #f59e0b, #d97706); }
+    .stat-card.c-red::before    { background: linear-gradient(180deg, #ef4444, #dc2626); }
+    .stat-card.c-purple::before { background: linear-gradient(180deg, #8b5cf6, #7c3aed); }
+    .stat-card.c-cyan::before   { background: linear-gradient(180deg, #06b6d4, #0891b2); }
+
     .stat-icon {
-      width: 60px;
-      height: 60px;
+      width: 52px; height: 52px;
       border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.8rem;
-      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; flex-shrink: 0;
+      color: #fff;
     }
-    .stat-icon.primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-    .stat-icon.success { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
-    .stat-icon.warning { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
-    .stat-icon.danger { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
-    .stat-info {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-    .stat-label {
-      font-size: 0.9rem;
-      color: var(--text-muted);
-      margin-bottom: 0.25rem;
-    }
-    .stat-value {
-      font-size: 1.8rem;
-      font-weight: 700;
-      color: var(--text);
-    }
-    .stat-change {
-      font-size: 0.85rem;
-      margin-top: 0.25rem;
-    }
-    .stat-change.up { color: var(--success); }
-    .stat-change.down { color: var(--danger); }
-    /* 图表容器 */
-    .charts-grid {
+    .stat-icon.i-blue   { background: linear-gradient(135deg, #667eea, #764ba2); }
+    .stat-icon.i-green  { background: linear-gradient(135deg, #10b981, #059669); }
+    .stat-icon.i-amber  { background: linear-gradient(135deg, #f59e0b, #d97706); }
+    .stat-icon.i-red    { background: linear-gradient(135deg, #ef4444, #dc2626); }
+    .stat-icon.i-purple { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+    .stat-icon.i-cyan   { background: linear-gradient(135deg, #06b6d4, #0891b2); }
+
+    .stat-info { flex: 1; }
+    .stat-label { font-size: 0.82rem; color: #718096; margin-bottom: 0.15rem; }
+    .stat-value { font-size: 1.65rem; font-weight: 700; color: #1a202c; line-height: 1.2; }
+    .stat-sub { font-size: 0.78rem; margin-top: 0.2rem; color: #a0aec0; }
+    .stat-sub .up   { color: #10b981; }
+    .stat-sub .down { color: #ef4444; }
+    .stat-sub .tag  { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; }
+    .stat-sub .tag-green  { background: #dcfce7; color: #166534; }
+    .stat-sub .tag-red    { background: #fee2e2; color: #991b1b; }
+    .stat-sub .tag-gray   { background: #f1f5f9; color: #475569; }
+
+    /* =========== 图表网格 =========== */
+    .charts-row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
-      gap: 1.5rem;
-      margin-bottom: 2rem;
+      gap: 1.25rem;
+      margin-bottom: 1.25rem;
     }
+    .charts-row.two   { grid-template-columns: 3fr 2fr; }
+    .charts-row.three { grid-template-columns: 1fr 1fr 1fr; }
     .chart-card {
       background: #fff;
-      padding: 1.5rem;
-      border-radius: 12px;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+      padding: 1.25rem 1.5rem;
+      border-radius: 14px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.05);
     }
-    .chart-card h3 {
-      margin: 0 0 1rem 0;
-      color: var(--text);
-      font-size: 1.1rem;
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
     }
-    .chart-container {
-      position: relative;
-      height: 300px;
+    .chart-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #1a202c;
+      display: flex; align-items: center; gap: 0.4rem;
     }
-    /* 全宽图表 */
-    .chart-full {
-      grid-column: 1 / -1;
+    .chart-title::before {
+      content: '';
+      width: 3px; height: 18px;
+      background: var(--primary, #667eea);
+      border-radius: 2px;
     }
-    /* 响应式 */
-      .charts-grid { grid-template-columns: 1fr; }
+    .chart-badge {
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: #f0f4ff;
+      color: #667eea;
     }
-      </style>
-  <link rel="stylesheet" href="/static/css/common.css">
-  </head>
+    .chart-wrapper { position: relative; height: 280px; }
+    .chart-wrapper.sm { height: 200px; }
+
+    /* =========== 设备状态面板 =========== */
+    .device-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 0.75rem;
+    }
+    .device-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      transition: background 0.2s;
+    }
+    .device-item:hover { background: #f1f5f9; }
+    .device-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .device-dot.online  { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,0.5); }
+    .device-dot.offline { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+    .device-dot.unknown { background: #a0aec0; }
+    .device-name { font-size: 0.9rem; font-weight: 500; color: #1a202c; }
+    .device-meta { font-size: 0.75rem; color: #a0aec0; }
+
+    /* =========== 最近日志表 =========== */
+    .log-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .log-table th {
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      font-weight: 600;
+      color: #4a5568;
+      background: #f7fafc;
+      border-bottom: 2px solid #e2e8f0;
+    }
+    .log-table td {
+      padding: 0.55rem 0.75rem;
+      border-bottom: 1px solid #edf2f7;
+      color: #2d3748;
+    }
+    .log-table tbody tr:hover { background: #f7fafc; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 500;
+    }
+    .badge-success { background: #dcfce7; color: #166534; }
+    .badge-danger  { background: #fee2e2; color: #991b1b; }
+    .badge-warning { background: #fef3c7; color: #92400e; }
+    .badge-info    { background: #dbeafe; color: #1e40af; }
+    .badge-face    { background: #ede9fe; color: #5b21b6; }
+    .badge-nfc     { background: #d1fae5; color: #065f46; }
+    .badge-bt      { background: #dbeafe; color: #1e40af; }
+    .badge-qr      { background: #fef3c7; color: #92400e; }
+    .empty-hint { text-align: center; padding: 2rem; color: #a0aec0; }
+
+    /* =========== 成功率圆环 =========== */
+    .rate-ring-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; }
+    .rate-ring { position: relative; width: 160px; height: 160px; }
+    .rate-ring canvas { width: 100% !important; height: 100% !important; }
+    .rate-ring-label {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+    }
+    .rate-ring-label .val { font-size: 2rem; font-weight: 700; color: #1a202c; }
+    .rate-ring-label .txt { font-size: 0.8rem; color: #718096; }
+    .rate-stats { display: flex; gap: 1.5rem; margin-top: 1rem; }
+    .rate-stat { text-align: center; }
+    .rate-stat .num { font-size: 1.1rem; font-weight: 600; }
+    .rate-stat .lbl { font-size: 0.75rem; color: #a0aec0; }
+
+    /* =========== 响应式 =========== */
+    @media (max-width: 1024px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .charts-row.two, .charts-row.three { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      .stats-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
 <body>
-  <!-- 左侧导航栏 -->
+  <!-- 侧边栏 -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="icon">🔐</span>
@@ -194,6 +300,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="/web/settings" class="nav-link" data-tooltip="系统设置">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
             <span class="icon">📖</span>
             <span class="label">API文档</span>
@@ -204,253 +316,432 @@
   </aside>
 
   <!-- 主内容区 -->
-  <div class="main-content">
-    <div class="topbar">
-      <h1>数据仪表盘</h1>
+  <main class="main-content">
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <h1 class="page-title">数据仪表盘</h1>
       <div class="user-actions">
-        <span id="welcome"></span>
-        <button class="btn btn-ghost" onclick="refreshData()">🔄 刷新</button>
-        <button class="btn btn-primary" onclick="logout()">退出登录</button>
+        <span id="welcomeMsg">欢迎</span>
+        <button class="btn btn-outline" onclick="logout()">退出登录</button>
       </div>
-    </div>
+    </header>
 
-    <div class="content">
-      <!-- 统计卡片 -->
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-icon primary">👥</div>
+    <!-- 内容区域 -->
+    <div class="content-area">
+      <!-- ===== 第一行：6 个统计卡片 ===== -->
+      <section class="stats-grid">
+        <div class="stat-card c-blue">
+          <div class="stat-icon i-blue">👥</div>
           <div class="stat-info">
-            <div class="stat-label">总用户数</div>
-            <div class="stat-value" id="stat-users">-</div>
-            <div class="stat-change up" id="stat-users-change">+0 本周</div>
+            <div class="stat-label">系统用户</div>
+            <div class="stat-value" id="totalUsers">-</div>
+            <div class="stat-sub" id="usersSub"></div>
           </div>
         </div>
-        <div class="stat-card">
-          <div class="stat-icon success">✅</div>
+        <div class="stat-card c-green">
+          <div class="stat-icon i-green">✅</div>
           <div class="stat-info">
-            <div class="stat-label">访问成功率</div>
-            <div class="stat-value" id="stat-success">-</div>
-            <div class="stat-change" id="stat-success-change">近7天</div>
+            <div class="stat-label">今日通行</div>
+            <div class="stat-value" id="todayAccess">-</div>
+            <div class="stat-sub" id="accessSub"></div>
           </div>
         </div>
-        <div class="stat-card">
-          <div class="stat-icon warning">🛠️</div>
+        <div class="stat-card c-cyan">
+          <div class="stat-icon i-cyan">🖥️</div>
           <div class="stat-info">
             <div class="stat-label">在线设备</div>
-            <div class="stat-value" id="stat-devices">-</div>
-            <div class="stat-change" id="stat-devices-change">实时状态</div>
+            <div class="stat-value" id="onlineDevices">-</div>
+            <div class="stat-sub" id="deviceSub"></div>
           </div>
         </div>
-        <div class="stat-card">
-          <div class="stat-icon danger">📊</div>
+        <div class="stat-card c-amber">
+          <div class="stat-icon i-amber">👤</div>
           <div class="stat-info">
-            <div class="stat-label">今日访问</div>
-            <div class="stat-value" id="stat-today">-</div>
-            <div class="stat-change" id="stat-today-change">+0 vs 昨日</div>
+            <div class="stat-label">在场访客</div>
+            <div class="stat-value" id="activeVisitors">-</div>
+            <div class="stat-sub" id="visitorSub"></div>
           </div>
         </div>
-      </div>
+        <div class="stat-card c-purple">
+          <div class="stat-icon i-purple">📶</div>
+          <div class="stat-info">
+            <div class="stat-label">NFC 卡片</div>
+            <div class="stat-value" id="nfcCards">-</div>
+            <div class="stat-sub" id="nfcSub"></div>
+          </div>
+        </div>
+        <div class="stat-card c-red">
+          <div class="stat-icon i-red">🚨</div>
+          <div class="stat-info">
+            <div class="stat-label">拒绝 / 异常</div>
+            <div class="stat-value" id="deniedCount">-</div>
+            <div class="stat-sub" id="deniedSub"></div>
+          </div>
+        </div>
+      </section>
 
-      <!-- 图表区域 -->
-      <div class="charts-grid">
+      <!-- ===== 第二行：趋势图 + 成功率圆环 ===== -->
+      <section class="charts-row two">
         <div class="chart-card">
-          <h3>📈 访问趋势（近7天）</h3>
-          <div class="chart-container">
-            <canvas id="accessTrendChart"></canvas>
+          <div class="chart-header">
+            <h3 class="chart-title">近 7 日访问趋势</h3>
+            <span class="chart-badge" id="trendTotal">-</span>
           </div>
-        </div>
-        <div class="chart-card">
-          <h3>🥧 访问类型分布</h3>
-          <div class="chart-container">
-            <canvas id="accessTypeChart"></canvas>
-          </div>
-        </div>
-        <div class="chart-card chart-full">
-          <h3>📊 24小时访问热力图</h3>
-          <div class="chart-container">
-            <canvas id="hourlyActivityChart"></canvas>
-          </div>
+          <div class="chart-wrapper"><canvas id="trendChart"></canvas></div>
         </div>
         <div class="chart-card">
-          <h3>📉 访问状态统计</h3>
-          <div class="chart-container">
-            <canvas id="accessStatusChart"></canvas>
+          <div class="chart-header">
+            <h3 class="chart-title">30 日通行成功率</h3>
+            <span class="chart-badge" id="statsPeriod">近 30 天</span>
+          </div>
+          <div class="chart-wrapper">
+            <div class="rate-ring-wrap">
+              <div class="rate-ring"><canvas id="rateChart"></canvas>
+                <div class="rate-ring-label"><div class="val" id="rateVal">-</div><div class="txt">成功率</div></div>
+              </div>
+              <div class="rate-stats">
+                <div class="rate-stat"><div class="num" id="rateSuccess" style="color:#10b981">-</div><div class="lbl">成功</div></div>
+                <div class="rate-stat"><div class="num" id="rateFailed" style="color:#f59e0b">-</div><div class="lbl">失败</div></div>
+                <div class="rate-stat"><div class="num" id="rateDenied" style="color:#ef4444">-</div><div class="lbl">拒绝</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 第三行：访问方式分布 + 时段分布 ===== -->
+      <section class="charts-row two">
+        <div class="chart-card">
+          <div class="chart-header">
+            <h3 class="chart-title">访问方式分布</h3>
+            <span class="chart-badge">近 7 天</span>
+          </div>
+          <div class="chart-wrapper"><canvas id="typeChart"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-header">
+            <h3 class="chart-title">24 小时活跃度</h3>
+            <span class="chart-badge">近 7 天</span>
+          </div>
+          <div class="chart-wrapper"><canvas id="hourChart"></canvas></div>
+        </div>
+      </section>
+
+      <!-- ===== 第四行：设备状态 + 最近日志 ===== -->
+      <section class="charts-row two">
+        <div class="chart-card">
+          <div class="chart-header">
+            <h3 class="chart-title">设备在线状态</h3>
+            <span class="chart-badge" id="deviceBadge">-</span>
+          </div>
+          <div class="device-grid" id="deviceGrid">
+            <div class="empty-hint">加载中...</div>
           </div>
         </div>
         <div class="chart-card">
-          <h3>🔝 TOP设备访问量</h3>
-          <div class="chart-container">
-            <canvas id="topDevicesChart"></canvas>
+          <div class="chart-header">
+            <h3 class="chart-title">最近访问记录</h3>
+            <span class="chart-badge"><a href="/web/logs" style="text-decoration:none;color:inherit;">查看全部 →</a></span>
+          </div>
+          <div style="max-height:340px;overflow-y:auto;">
+            <table class="log-table">
+              <thead><tr><th>时间</th><th>方式</th><th>状态</th><th>设备</th></tr></thead>
+              <tbody id="logBody"><tr><td colspan="4" class="empty-hint">加载中...</td></tr></tbody>
+            </table>
           </div>
         </div>
-      </div>
+      </section>
     </div>
-  </div>
+  </main>
 
-    <script>
+  <script>
+    const AUTH = () => ({ 'Authorization': `Bearer ${localStorage.getItem('token')}` });
+    const TYPE_LABELS = { face: '人脸识别', nfc: 'NFC 卡', qrcode: '二维码', bluetooth: '蓝牙', manual: '手动' };
+    const TYPE_COLORS = ['#667eea','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4'];
 
-    const token = localStorage.getItem('smartaccess_token');
-    const username = localStorage.getItem('smartaccess_username');
-    if (!token) { window.location.href = '/web/auth'; }
-    else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
-    
-    // 图表实例
-    let charts = {};
-    // 初始化图表
-    function initCharts() {
-      // 访问趋势折线图
-      charts.accessTrend = new Chart(document.getElementById('accessTrendChart'), {
-        type: 'line',
-        data: {
-          labels: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
-          datasets: [{
-            label: '成功',
-            data: [0, 0, 0, 0, 0, 0, 0],
-            borderColor: '#10b981',
-            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-            tension: 0.4
-          }, {
-            label: '失败',
-            data: [0, 0, 0, 0, 0, 0, 0],
-            borderColor: '#ef4444',
-            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-            tension: 0.4
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { position: 'top' } }
-        }
-      });
-      // 访问类型饼图
-      charts.accessType = new Chart(document.getElementById('accessTypeChart'), {
-        type: 'doughnut',
-        data: {
-          labels: ['NFC', '人脸', '蓝牙', '远程'],
-          datasets: [{
-            data: [0, 0, 0, 0],
-            backgroundColor: ['#667eea', '#10b981', '#f59e0b', '#ef4444']
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { position: 'right' } }
-        }
-      });
-      // 24小时热力柱状图
-      charts.hourlyActivity = new Chart(document.getElementById('hourlyActivityChart'), {
-        type: 'bar',
-        data: {
-          labels: Array.from({length: 24}, (_, i) => `${i}:00`),
-          datasets: [{
-            label: '访问次数',
-            data: new Array(24).fill(0),
-            backgroundColor: '#667eea'
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } }
-        }
-      });
-      // 访问状态柱状图
-      charts.accessStatus = new Chart(document.getElementById('accessStatusChart'), {
-        type: 'bar',
-        data: {
-          labels: ['成功', '失败', '拒绝'],
-          datasets: [{
-            label: '次数',
-            data: [0, 0, 0],
-            backgroundColor: ['#10b981', '#ef4444', '#f59e0b']
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } }
-        }
-      });
-      // TOP设备横向柱状图
-      charts.topDevices = new Chart(document.getElementById('topDevicesChart'), {
-        type: 'bar',
-        data: {
-          labels: ['设备1', '设备2', '设备3', '设备4', '设备5'],
-          datasets: [{
-            label: '访问次数',
-            data: [0, 0, 0, 0, 0],
-            backgroundColor: '#764ba2'
-          }]
-        },
-        options: {
-          indexAxis: 'y',
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } }
-        }
-      });
-    }
-    // 加载数据
-    async function loadData() {
+    // ========== 入口 ==========
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) { window.location.href = '/web/auth'; return; }
       try {
-        // 获取统计数据
-        const statsRes = await fetch('/api/hardware/logs/statistics?days=7', { headers: authHeaders() });
-        const stats = await statsRes.json();
-        // 更新统计卡片
-        if (stats.total_accesses !== undefined) {
-          document.getElementById('stat-today').textContent = stats.total_accesses;
-          document.getElementById('stat-success').textContent = stats.success_rate || '0%';
-          // 更新访问状态图表
-          charts.accessStatus.data.datasets[0].data = [
-            stats.success_accesses || 0,
-            stats.failed_accesses || 0,
-            stats.denied_accesses || 0
-          ];
-          charts.accessStatus.update();
-          // 更新访问类型图表
-          if (stats.access_by_type) {
-            const types = Object.keys(stats.access_by_type);
-            const values = Object.values(stats.access_by_type);
-            charts.accessType.data.labels = types;
-            charts.accessType.data.datasets[0].data = values;
-            charts.accessType.update();
-          }
+        const res = await fetch('/api/auth/me', { headers: AUTH() });
+        if (!res.ok) throw 0;
+        const r = await res.json();
+        const u = r.data || r;
+        localStorage.setItem('role', u.role || 'access_user');
+        const roleMap = { admin: '系统管理员', access_user: '门禁用户' };
+        const roleLabel = roleMap[u.role] || u.role;
+        document.getElementById('welcomeMsg').textContent = `${u.username}，您好（${roleLabel}）`;
+        if (u.role !== 'admin') {
+          document.querySelector('.main-content').innerHTML = `
+            <div style="text-align:center;padding:4rem 2rem;">
+              <h2 style="color:#667eea;">欢迎使用 SmartAccess 门禁系统</h2>
+              <p style="color:#666;font-size:1.1rem;margin-top:1rem;">您的角色：<strong>${roleLabel}</strong></p>
+              <p style="color:#999;">门禁用户的人脸、NFC、蓝牙数据由管理员统一管理。<br>如有需要请联系系统管理员。</p>
+            </div>`;
+          return;
         }
-        // 获取设备列表
-        const devicesRes = await fetch('/api/hardware/devices', { headers: authHeaders() });
-        const devices = await devicesRes.json();
-        const onlineCount = devices.filter(d => d.connection_status === 'online').length;
-        document.getElementById('stat-devices').textContent = `${onlineCount}/${devices.length}`;
-        document.getElementById('stat-devices-change').textContent = `共${devices.length}台设备`;
-        // 模拟7天趋势数据（实际应从后端获取）
-        const successData = [45, 52, 48, 61, 55, 67, 58];
-        const failData = [5, 3, 7, 4, 6, 2, 4];
-        charts.accessTrend.data.datasets[0].data = successData;
-        charts.accessTrend.data.datasets[1].data = failData;
-        charts.accessTrend.update();
-        // 模拟24小时数据
-        const hourlyData = Array.from({length: 24}, () => Math.floor(Math.random() * 30));
-        charts.hourlyActivity.data.datasets[0].data = hourlyData;
-        charts.hourlyActivity.update();
-        // 模拟TOP设备数据
-        const topDeviceNames = devices.slice(0, 5).map(d => d.device_name || d.device_id);
-        const topDeviceData = Array.from({length: 5}, () => Math.floor(Math.random() * 100));
-        charts.topDevices.data.labels = topDeviceNames.length ? topDeviceNames : ['暂无设备'];
-        charts.topDevices.data.datasets[0].data = topDeviceData;
-        charts.topDevices.update();
-      } catch (e) {
-        console.error('加载数据失败', e);
+      } catch { localStorage.removeItem('token'); window.location.href = '/web/auth'; return; }
+      loadAll();
+    });
+
+    async function loadAll() {
+      await Promise.all([loadStats(), loadCharts(), loadDevices(), loadRecentLogs()]);
+    }
+
+    // ========== 统计卡片 ==========
+    async function loadStats() {
+      const h = AUTH();
+      // 并行请求
+      const [usersR, statsR, visitorR, nfcR, devR] = await Promise.all([
+        fetch('/api/hardware/stats/user-count', { headers: h }).then(r => r.ok ? r.json() : null),
+        fetch('/api/hardware/logs/statistics', { headers: h }).then(r => r.ok ? r.json() : null),
+        fetch('/api/visitors/statistics/today', { headers: h }).then(r => r.ok ? r.json() : null),
+        fetch('/api/hardware/nfc/cards', { headers: h }).then(r => r.ok ? r.json() : null),
+        fetch('/api/hardware/devices', { headers: h }).then(r => r.ok ? r.json() : null),
+      ]);
+
+      // 用户
+      if (usersR) {
+        document.getElementById('totalUsers').textContent = usersR.total;
+        const wk = usersR.new_this_week || 0;
+        document.getElementById('usersSub').innerHTML = wk > 0
+          ? `<span class="tag tag-green">+${wk} 本周新增</span>`
+          : `<span class="tag tag-gray">本周无新增</span>`;
+      }
+
+      // 今日通行 & 拒绝
+      if (statsR) {
+        // 获取今日数据
+        const today = new Date().toISOString().split('T')[0];
+        const todayR = await fetch(`/api/hardware/logs?start_date=${today}&end_date=${today}&limit=10000`, { headers: h }).then(r => r.ok ? r.json() : []);
+        const todayOk = todayR.filter(l => l.status === 'success').length;
+        const todayDenied = todayR.filter(l => l.status === 'denied').length;
+        const todayFailed = todayR.filter(l => l.status === 'failed').length;
+        document.getElementById('todayAccess').textContent = todayOk;
+        document.getElementById('accessSub').innerHTML = `共 ${todayR.length} 条记录`;
+        document.getElementById('deniedCount').textContent = todayDenied + todayFailed;
+        document.getElementById('deniedSub').innerHTML = todayDenied > 0 || todayFailed > 0
+          ? `<span class="tag tag-red">拒绝 ${todayDenied} / 失败 ${todayFailed}</span>`
+          : `<span class="tag tag-green">今日无异常</span>`;
+      }
+
+      // 访客
+      if (visitorR) {
+        document.getElementById('activeVisitors').textContent = visitorR.currently_inside;
+        document.getElementById('visitorSub').innerHTML =
+          `今日签入 ${visitorR.checked_in_today} · 签出 ${visitorR.checked_out_today}`;
+      }
+
+      // NFC
+      if (nfcR) {
+        const active = nfcR.filter(c => c.is_active).length;
+        document.getElementById('nfcCards').textContent = nfcR.length;
+        document.getElementById('nfcSub').innerHTML = `<span class="tag tag-green">${active} 张启用</span>`;
+      }
+
+      // 设备
+      if (devR) {
+        const online = devR.filter(isDeviceOnline).length;
+        document.getElementById('onlineDevices').textContent = `${online}/${devR.length}`;
+        document.getElementById('deviceSub').innerHTML = online === devR.length
+          ? `<span class="tag tag-green">全部在线</span>`
+          : `<span class="tag tag-red">${devR.length - online} 台离线</span>`;
       }
     }
-    function refreshData() {
-      loadData();
+
+    // ========== 图表 ==========
+    async function loadCharts() {
+      const h = AUTH();
+      const [trendR, statsR, hourR] = await Promise.all([
+        fetch('/api/hardware/logs/trend?days=7', { headers: h }).then(r => r.ok ? r.json() : null),
+        fetch('/api/hardware/logs/statistics?days=30', { headers: h }).then(r => r.ok ? r.json() : null),
+        fetch('/api/hardware/logs/hourly-distribution?days=7', { headers: h }).then(r => r.ok ? r.json() : null),
+      ]);
+
+      // —— 趋势折线图 ——
+      if (trendR && trendR.trend) {
+        const t = trendR.trend;
+        const weekTotal = t.reduce((s, d) => s + d.total, 0);
+        document.getElementById('trendTotal').textContent = `共 ${weekTotal} 次`;
+        new Chart(document.getElementById('trendChart'), {
+          type: 'line',
+          data: {
+            labels: t.map(d => d.date.substring(5)),
+            datasets: [
+              { label: '成功', data: t.map(d => d.success), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', tension: 0.4, fill: true, pointRadius: 4, pointBackgroundColor: '#10b981' },
+              { label: '失败', data: t.map(d => d.failed), borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.08)', tension: 0.4, fill: true, pointRadius: 3, borderDash: [4,4] },
+            ]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: { legend: { position: 'top', labels: { usePointStyle: true, padding: 16 } } },
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+          }
+        });
+      }
+
+      // —— 成功率圆环 ——
+      if (statsR) {
+        const { success_accesses: ok, failed_accesses: fail, denied_accesses: deny, total_accesses: total } = statsR;
+        const rate = total > 0 ? ((ok / total) * 100).toFixed(1) : '0.0';
+        document.getElementById('rateVal').textContent = rate + '%';
+        document.getElementById('rateSuccess').textContent = ok;
+        document.getElementById('rateFailed').textContent = fail;
+        document.getElementById('rateDenied').textContent = deny;
+        new Chart(document.getElementById('rateChart'), {
+          type: 'doughnut',
+          data: {
+            labels: ['成功', '失败', '拒绝'],
+            datasets: [{ data: [ok, fail, deny], backgroundColor: ['#10b981','#f59e0b','#ef4444'], borderWidth: 0 }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            cutout: '75%',
+            plugins: { legend: { display: false }, tooltip: { enabled: true } }
+          }
+        });
+      }
+
+      // —— 访问方式分布 ——
+      // 用近7天日志统计
+      const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
+      const logsR = await fetch(`/api/hardware/logs?start_date=${weekAgo.toISOString().split('T')[0]}&limit=10000`, { headers: h }).then(r => r.ok ? r.json() : []);
+      const typeCnt = {};
+      logsR.forEach(l => { const t = (l.access_type || 'unknown').split(':')[0]; typeCnt[t] = (typeCnt[t] || 0) + 1; });
+      if (Object.keys(typeCnt).length > 0) {
+        new Chart(document.getElementById('typeChart'), {
+          type: 'polarArea',
+          data: {
+            labels: Object.keys(typeCnt).map(t => TYPE_LABELS[t] || t),
+            datasets: [{ data: Object.values(typeCnt), backgroundColor: TYPE_COLORS.slice(0, Object.keys(typeCnt).length).map(c => c + 'cc') }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'right', labels: { usePointStyle: true, padding: 12 } } },
+            scales: { r: { ticks: { precision: 0 } } }
+          }
+        });
+      }
+
+      // —— 24小时活跃度 ——
+      if (hourR && hourR.distribution) {
+        const dist = hourR.distribution;
+        const hours = Object.keys(dist).sort();
+        const vals = hours.map(h => dist[h]);
+        const maxVal = Math.max(...vals, 1);
+        new Chart(document.getElementById('hourChart'), {
+          type: 'bar',
+          data: {
+            labels: hours.map(h => h + ':00'),
+            datasets: [{
+              label: '访问次数',
+              data: vals,
+              backgroundColor: vals.map(v => {
+                const ratio = v / maxVal;
+                if (ratio > 0.7) return 'rgba(239,68,68,0.7)';
+                if (ratio > 0.4) return 'rgba(245,158,11,0.7)';
+                if (ratio > 0) return 'rgba(102,126,234,0.6)';
+                return 'rgba(203,213,225,0.4)';
+              }),
+              borderRadius: 4,
+              maxBarThickness: 24,
+            }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false },
+              tooltip: { callbacks: { title: ctx => ctx[0].label.replace(':00','时'), label: ctx => `${ctx.raw} 次访问` } }
+            },
+            scales: {
+              x: { ticks: { callback: (v, i) => i % 3 === 0 ? hours[i] + '时' : '', maxRotation: 0 }, grid: { display: false } },
+              y: { beginAtZero: true, ticks: { precision: 0 } }
+            }
+          }
+        });
+      }
     }
-    // 初始化
-    initCharts();
-    loadData();
-    setInterval(loadData, 60000); // 每分钟刷新
-    </script>
-  </body>
+
+    // ========== 设备状态 ==========
+    const HEARTBEAT_TIMEOUT = 30 * 60 * 1000; // 30 分钟（毫秒）
+
+    function isDeviceOnline(device) {
+      if (!device.last_heartbeat) return false;
+      return (Date.now() - new Date(device.last_heartbeat).getTime()) < HEARTBEAT_TIMEOUT;
+    }
+
+    async function loadDevices() {
+      const r = await fetch('/api/hardware/devices', { headers: AUTH() });
+      if (!r.ok) return;
+      const devices = await r.json();
+      const grid = document.getElementById('deviceGrid');
+      const online = devices.filter(isDeviceOnline).length;
+      document.getElementById('deviceBadge').textContent = `${online}/${devices.length} 在线`;
+
+      if (devices.length === 0) { grid.innerHTML = '<div class="empty-hint">暂无设备</div>'; return; }
+      grid.innerHTML = '';
+      devices.forEach(d => {
+        const online = isDeviceOnline(d);
+        const hb = d.last_heartbeat ? timeSince(new Date(d.last_heartbeat)) : '从未';
+        const div = document.createElement('div');
+        div.className = 'device-item';
+        div.innerHTML = `
+          <span class="device-dot ${online ? 'online' : 'offline'}"></span>
+          <div>
+            <div class="device-name">${d.device_name || d.device_id}</div>
+            <div class="device-meta">${d.location || d.device_type} · 心跳 ${hb}${!online ? ' <span style="color:#ef4444;font-weight:500">· 离线</span>' : ''}</div>
+          </div>`;
+        grid.appendChild(div);
+      });
+    }
+
+    // ========== 最近日志 ==========
+    async function loadRecentLogs() {
+      const r = await fetch('/api/hardware/logs?limit=10', { headers: AUTH() });
+      if (!r.ok) return;
+      const logs = await r.json();
+      const tbody = document.getElementById('logBody');
+      if (logs.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="empty-hint">暂无记录</td></tr>'; return; }
+      tbody.innerHTML = '';
+      logs.forEach(l => {
+        const typeRaw = (l.access_type || 'unknown').split(':')[0];
+        const typeLabel = TYPE_LABELS[typeRaw] || typeRaw;
+        const typeCls = { face:'badge-face', nfc:'badge-nfc', bluetooth:'badge-bt', qrcode:'badge-qr' }[typeRaw] || 'badge-info';
+        const statusCls = { success:'badge-success', failed:'badge-warning', denied:'badge-danger' }[l.status] || 'badge-info';
+        const statusLabel = { success:'成功', failed:'失败', denied:'拒绝' }[l.status] || l.status;
+        const time = new Date(l.timestamp).toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${time}</td>
+          <td><span class="badge ${typeCls}">${typeLabel}</span></td>
+          <td><span class="badge ${statusCls}">${statusLabel}</span></td>
+          <td>${l.device_id || '-'}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // ========== 工具函数 ==========
+    function timeSince(date) {
+      const s = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (s < 60) return s + '秒前';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + '分钟前';
+      const hr = Math.floor(m / 60);
+      if (hr < 24) return hr + '小时前';
+      const d = Math.floor(hr / 24);
+      return d + '天前';
+    }
+
+    function logout() {
+      localStorage.removeItem('token');
+      window.location.href = '/web/auth';
+    }
+
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('collapsed');
+    }
+  </script>
+</body>
 </html>
+

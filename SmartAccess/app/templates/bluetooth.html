@@ -253,6 +253,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="/web/settings" class="nav-link">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="/docs" class="nav-link" target="_blank">
             <span class="icon">📖</span>
             <span class="label">API文档</span>
@@ -349,6 +355,31 @@
 
   <script src="/static/js/common.js"></script>
   <script>
+    // 设置欢迎文本
+    {
+      const username = localStorage.getItem('username');
+      const welcomeEl = document.getElementById('welcome');
+      if (welcomeEl) welcomeEl.textContent = username ? `你好，${username}` : '已登录';
+    }
+    // 认证守卫
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/web/auth';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('未授权');
+      } catch (err) {
+        localStorage.removeItem('token');
+        window.location.href = '/web/auth';
+      }
+    });
+    
     // 加载蓝牙绑定列表
     async function loadBindings() {
       try {

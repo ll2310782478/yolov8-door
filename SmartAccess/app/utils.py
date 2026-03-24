@@ -2,13 +2,14 @@
 
 import json
 from datetime import datetime
+from app.time_utils import now_utc8
 import os
 from typing import Optional, Dict, List
 
 
 def check_permission_valid(permission_start_date: datetime, permission_end_date: Optional[datetime]) -> bool:
     """检查权限是否在有效期内"""
-    now = datetime.utcnow()
+    now = now_utc8()
     
     # 检查开始日期
     if permission_start_date and permission_start_date > now:
@@ -32,11 +33,11 @@ def check_time_period_valid(time_periods_json: Optional[str]) -> bool:
         return True
     
     # 如果没有为今天设置时间段，则允许
-    today_name = datetime.utcnow().strftime('%A').lower()
+    today_name = now_utc8().strftime('%A').lower()
     if today_name not in time_periods:
         return True
     
-    current_time = datetime.utcnow().strftime('%H:%M')
+    current_time = now_utc8().strftime('%H:%M')
     allowed_periods = time_periods.get(today_name, [])
     
     for period in allowed_periods:
@@ -54,7 +55,7 @@ def check_daily_limit(max_daily_uses: int, daily_use_count: int, last_use_date: 
     
     # 如果上次使用日期是今天
     if last_use_date:
-        today = datetime.utcnow().date()
+        today = now_utc8().date()
         if last_use_date.date() == today:
             return daily_use_count < max_daily_uses
     
@@ -64,13 +65,13 @@ def check_daily_limit(max_daily_uses: int, daily_use_count: int, last_use_date: 
 
 def increment_daily_use_count(daily_use_count: int, last_use_date: Optional[datetime]) -> tuple:
     """增加每日使用计数"""
-    today = datetime.utcnow().date()
+    today = now_utc8().date()
     
     # 如果上次使用不是今天，则重置计数
     if last_use_date and last_use_date.date() != today:
-        return 1, datetime.utcnow()
+        return 1, now_utc8()
     
-    return daily_use_count + 1, datetime.utcnow()
+    return daily_use_count + 1, now_utc8()
 
 
 def save_file(upload_file) -> str:
@@ -81,7 +82,7 @@ def save_file(upload_file) -> str:
     os.makedirs(upload_dir, exist_ok=True)
     
     # 使用原始文件名，添加时间戳避免冲突
-    timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+    timestamp = now_utc8().strftime('%Y%m%d%H%M%S')
     file_path = os.path.join(upload_dir, f"{timestamp}_{upload_file.filename}")
     
     with open(file_path, "wb") as buffer:
@@ -160,3 +161,4 @@ def generate_permission_summary(user) -> Dict:
         }
     
     return summary
+

@@ -92,3 +92,9 @@ def web_logs():
     """访问日志页面"""
     return load_template("logs.html")
 
+
+@router.get("/settings", response_class=HTMLResponse)
+def web_settings():
+    """系统设置页面"""
+    return load_template("settings.html")
+

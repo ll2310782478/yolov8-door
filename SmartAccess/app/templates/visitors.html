@@ -86,6 +86,22 @@
         .visitor-actions {
             display: flex;
             gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .btn-edit {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .valid-time {
+            margin-top: 0.5rem;
+            padding: 0.4rem 0.6rem;
+            background: #e8f5e9;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: #2e7d32;
+        }
+        .valid-time.expired {
+            background: #fbe9e7;
+            color: #c62828;
         }
         .close {
             color: #aaa;
@@ -126,6 +142,25 @@
   </head>
 <body>
   <script src="/static/js/common.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/web/auth';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('未授权');
+      } catch (err) {
+        localStorage.removeItem('token');
+        window.location.href = '/web/auth';
+      }
+    });
+  </script>
   <!-- 左侧导航栏 -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
@@ -190,6 +225,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="/web/settings" class="nav-link" data-tooltip="系统设置">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
             <span class="icon">📖</span>
             <span class="label">API文档</span>
@@ -214,7 +255,6 @@
         <div class="controls">
             <input type="text" id="searchInput" placeholder="搜索访客名称或公司...">
             <button onclick="openAddVisitorModal()">➕ 添加新访客</button>
-            <button onclick="openEmailConfigModal()">📧 邮件配置</button>
             <button onclick="loadVisitors()">刷新</button>
         </div>
         
@@ -289,33 +329,6 @@
         </div>
     </div>
 
-    <!-- 邮件配置模态框 -->
-    <div id="emailConfigModal" class="modal">
-        <div class="modal-content">
-            <span class="close" onclick="closeEmailConfigModal()">&times;</span>
-            <h2>邮件服务器配置</h2>
-            <form id="emailConfigForm">
-                <div class="form-group">
-                    <label for="smtpServer">SMTP 服务器</label>
-                    <input type="text" id="smtpServer" placeholder="smtp.gmail.com" required>
-                </div>
-                <div class="form-group">
-                    <label for="smtpPort">SMTP 端口</label>
-                    <input type="number" id="smtpPort" placeholder="465" required>
-                </div>
-                <div class="form-group">
-                    <label for="emailUser">邮箱账号</label>
-                    <input type="email" id="emailUser" required>
-                </div>
-                <div class="form-group">
-                    <label for="emailPassword">邮箱密码/授权码</label>
-                    <input type="password" id="emailPassword" required>
-                </div>
-                <button type="submit">保存配置</button>
-            </form>
-        </div>
-    </div>
-    
     <!-- 二维码显示模态框 -->
     <div id="qrcodeModal" class="modal">
         <div class="modal-content">
@@ -326,13 +339,36 @@
             </div>
         </div>
     </div>
+
+    <!-- 编辑访客模态框 -->
+    <div id="editVisitorModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditVisitorModal()">&times;</span>
+            <h2>编辑访客信息</h2>
+            <form id="editVisitorForm">
+                <input type="hidden" id="editVisitorId">
+                <div class="row">
+                    <div><label>姓名</label><input type="text" id="editName" required></div>
+                    <div><label>公司</label><input type="text" id="editCompany"></div>
+                </div>
+                <div class="row">
+                    <div><label>电话</label><input type="text" id="editPhone"></div>
+                    <div><label>邮箱</label><input type="email" id="editEmail"></div>
+                </div>
+                <label>来访目的</label>
+                <input type="text" id="editPurpose">
+                <br><br>
+                <button type="submit">保存修改</button>
+            </form>
+        </div>
+    </div>
     </div>
   </div>
 
     <script>
 
-        const token = localStorage.getItem('smartaccess_token');
-        const username = localStorage.getItem('smartaccess_username');
+        const token = localStorage.getItem('token');
+        const username = localStorage.getItem('username');
         if (!token) {
             window.location.href = '/web/auth';
         } else {
@@ -341,7 +377,7 @@
         
         // 加载访客列表
         function loadVisitors() {
-            fetch('/api/visitors/?show_checked_out=false', { headers: authHeaders() })
+            fetch('/api/visitors/?is_checked_out=false', { headers: authHeaders() })
                 .then(async response => {
                     const data = await response.json();
                     if (!response.ok) throw new Error(data.detail || '加载访客失败');
@@ -364,6 +400,21 @@
                         
                         const usesText = visitor.max_uses > 0 ? `${visitor.accessed_count} / ${visitor.max_uses}` : `${visitor.accessed_count} / 不限`;
 
+                        // 有效时间
+                        let validTimeHtml = '';
+                        if (visitor.permission_start_time && visitor.permission_expires_at) {
+                            const start = new Date(visitor.permission_start_time);
+                            const end = new Date(visitor.permission_expires_at);
+                            const now = new Date();
+                            const isExpired = now > end;
+                            const notStarted = now < start;
+                            let statusLabel = '有效';
+                            let cssClass = 'valid-time';
+                            if (isExpired) { statusLabel = '已过期'; cssClass = 'valid-time expired'; }
+                            else if (notStarted) { statusLabel = '未生效'; cssClass = 'valid-time expired'; }
+                            validTimeHtml = `<div class="${cssClass}">⏰ 有效时间: ${start.toLocaleString('zh-CN')} ~ ${end.toLocaleString('zh-CN')}（${statusLabel}）</div>`;
+                        }
+
                         card.innerHTML = `
                             <div class="visitor-info">
                                 <h3>${visitor.name}</h3>
@@ -373,8 +424,10 @@
                                 <p>权限: <strong>${accessText}</strong></p>
                                 <p>使用次数: ${usesText}</p>
                                 <p>入场时间: ${new Date(visitor.check_in_time).toLocaleString('zh-CN')}</p>
+                                ${validTimeHtml}
                             </div>
                             <div class="visitor-actions">
+                                <button class="btn-small btn-edit" onclick='openEditVisitorModal(${JSON.stringify(visitor).replace(/'/g, "&#39;")})'>编辑</button>
                                 <button class="btn-small btn-qrcode" onclick="showQrcode(${visitor.id})">二维码</button>
                                 <button class="btn-small btn-qrcode" onclick="sendQrcode(${visitor.id}, 'email')">发邮箱</button>
                                 <button class="btn-small btn-qrcode" onclick="sendQrcode(${visitor.id}, 'sms')">发短信</button>
@@ -410,6 +463,47 @@
         function closeQrcodeModal() {
             document.getElementById('qrcodeModal').style.display = 'none';
         }
+
+        // 编辑访客
+        function openEditVisitorModal(visitor) {
+            document.getElementById('editVisitorId').value = visitor.id;
+            document.getElementById('editName').value = visitor.name || '';
+            document.getElementById('editCompany').value = visitor.company || '';
+            document.getElementById('editPhone').value = visitor.phone || '';
+            document.getElementById('editEmail').value = visitor.email || '';
+            document.getElementById('editPurpose').value = visitor.purpose || '';
+            document.getElementById('editVisitorModal').style.display = 'block';
+        }
+        function closeEditVisitorModal() {
+            document.getElementById('editVisitorModal').style.display = 'none';
+        }
+        document.getElementById('editVisitorForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const visitorId = document.getElementById('editVisitorId').value;
+            const updateData = {
+                name: document.getElementById('editName').value,
+                phone: document.getElementById('editPhone').value,
+                email: document.getElementById('editEmail').value,
+                company: document.getElementById('editCompany').value,
+                purpose: document.getElementById('editPurpose').value
+            };
+            fetch(`/api/visitors/${visitorId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                body: JSON.stringify(updateData)
+            })
+            .then(async response => {
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || '更新失败');
+                return data;
+            })
+            .then(() => {
+                alert('访客信息已更新');
+                closeEditVisitorModal();
+                loadVisitors();
+            })
+            .catch(error => alert(error.message));
+        });
         function showQrcode(visitorId) {
             // 直接使用新的图片端点
             const imgUrl = `/api/visitors/${visitorId}/qrcode/image?token=${token}`;
@@ -489,53 +583,10 @@
                 return data;
             })
             .then(data => {
-                alert('访客创建成功！');
+                const hasEmail = !!visitorData.email;
+                alert(hasEmail ? '访客创建成功，系统已自动发送二维码邮件（如邮件配置有效）！' : '访客创建成功！');
                 closeVisitorModal();
                 loadVisitors();
-            })
-            .catch(error => alert(error.message));
-        });
-
-        // 邮件配置相关
-        function openEmailConfigModal() {
-            fetch('/api/visitors/email-config', { headers: authHeaders() })
-                .then(res => res.json())
-                .then(data => {
-                    if (data) {
-                        document.getElementById('smtpServer').value = data.smtp_server || '';
-                        document.getElementById('smtpPort').value = data.smtp_port || '';
-                        document.getElementById('emailUser').value = data.email_user || '';
-                        // 密码通常不回显，或者回显占位符
-                        document.getElementById('emailPassword').value = ''; 
-                    }
-                    document.getElementById('emailConfigModal').style.display = 'block';
-                })
-                .catch(err => console.error(err));
-        }
-        function closeEmailConfigModal() {
-            document.getElementById('emailConfigModal').style.display = 'none';
-        }
-        document.getElementById('emailConfigForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const configData = {
-                smtp_server: document.getElementById('smtpServer').value,
-                smtp_port: parseInt(document.getElementById('smtpPort').value),
-                email_user: document.getElementById('emailUser').value,
-                email_password: document.getElementById('emailPassword').value
-            };
-            
-            fetch('/api/visitors/email-config', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...authHeaders()
-                },
-                body: JSON.stringify(configData)
-            })
-            .then(async response => {
-                if (!response.ok) throw new Error('保存配置失败');
-                alert('邮件配置已保存');
-                closeEmailConfigModal();
             })
             .catch(error => alert(error.message));
         });

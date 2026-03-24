@@ -44,6 +44,25 @@
   </head>
 <body>
   <script src="/static/js/common.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/web/auth';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('未授权');
+      } catch (err) {
+        localStorage.removeItem('token');
+        window.location.href = '/web/auth';
+      }
+    });
+  </script>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="icon">🔐</span>
@@ -107,6 +126,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="/web/settings" class="nav-link" data-tooltip="系统设置">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
             <span class="icon">📖</span>
             <span class="label">API文档</span>
@@ -151,8 +176,12 @@
                     </select>
                 </div>
                 <div>
-                    <label>天数</label>
-                    <input id="daysInput" type="number" min="1" max="30" value="7" style="width:90px;">
+                    <label>开始日期</label>
+                    <input id="startDateInput" type="date" style="width:140px;">
+                </div>
+                <div>
+                    <label>结束日期</label>
+                    <input id="endDateInput" type="date" style="width:140px;">
                 </div>
                 <button class="primary" onclick="loadLogs()">刷新</button>
                 <button class="ghost" onclick="exportCsv()">导出 CSV</button>
@@ -178,29 +207,70 @@
 
     <script>
 
-    const token = localStorage.getItem('smartaccess_token');
-        const username = localStorage.getItem('smartaccess_username');
-        if (!token) { window.location.href = '/web/auth'; }
-        else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
-        
+    const token = localStorage.getItem('token');
+        const username = localStorage.getItem('username');
+        if (!token) { 
+            window.location.href = '/web/auth'; 
+        } else {
+            document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录';
+            initDatePickers();  // 初始化日期选择器
+        }
+
         function setStatus(msg, good=false, bad=false) {
             const box = document.getElementById('status');
             box.textContent = msg;
             box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
         }
+        /**
+         * 初始化日期选择器的默认值（最近 7 天）
+         */
+        function initDatePickers() {
+            const today = new Date();
+            const sevenDaysAgo = new Date(today);
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+            
+            const startDateInput = document.getElementById('startDateInput');
+            const endDateInput = document.getElementById('endDateInput');
+            
+            // 设置默认值：最近 7天
+            endDateInput.value = today.toISOString().split('T')[0];
+            startDateInput.value = sevenDaysAgo.toISOString().split('T')[0];
+        }
+        
         async function loadLogs() {
             const type = document.getElementById('typeFilter').value;
             const statusF = document.getElementById('statusFilter').value;
-            const days = document.getElementById('daysInput').value || 7;
+            const startDate = document.getElementById('startDateInput').value;
+            const endDate = document.getElementById('endDateInput').value;
             const params = new URLSearchParams();
-            params.set('days', days);
+            if (startDate) params.set('start_date', startDate);
+            if (endDate) params.set('end_date', endDate);
             if (type) params.set('access_type', type);
             if (statusF) params.set('status', statusF);
             const url = '/api/hardware/logs?' + params.toString();
+            
+            // 显示加载状态
+            setStatus('正在加载日志...', 'info');
+            
             try {
                 const res = await fetch(url, { headers: authHeaders() });
+                
+                // 检查响应状态
+                if (!res.ok) {
+                    // 尝试解析 JSON 错误响应
+                    const errorData = await res.json().catch(() => ({
+                        error: { message: `HTTP ${res.status}: 服务器错误` }
+                    }));
+                    
+                    throw new Error(
+                        errorData.error?.message || 
+                        errorData.detail || 
+                        `HTTP ${res.status}: 请求失败`
+                    );
+                }
+                
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || '加载日志失败');
+
                 const body = document.getElementById('logBody');
                 body.innerHTML = '';
                 if (!data.length) {
@@ -220,22 +290,40 @@
                 });
                 setStatus('日志加载完成', true);
             } catch (e) {
-                setStatus(e.message, false, true);
+                console.error('加载日志时发生错误:', e);
+                setStatus(`加载失败: ${e.message}`, false, true);
             }
         }
         async function exportCsv() {
             const type = document.getElementById('typeFilter').value;
             const statusF = document.getElementById('statusFilter').value;
-            const days = document.getElementById('daysInput').value || 7;
+            const startDate = document.getElementById('startDateInput').value;
+            const endDate = document.getElementById('endDateInput').value;
             const params = new URLSearchParams();
-            params.set('days', days);
+            if (startDate) params.set('start_date', startDate);
+            if (endDate) params.set('end_date', endDate);
             if (type) params.set('access_type', type);
             if (statusF) params.set('status', statusF);
             const url = '/api/hardware/logs?' + params.toString();
+            
             try {
                 const res = await fetch(url, { headers: authHeaders() });
+                
+                // 检查响应状态
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({
+                        error: { message: `HTTP ${res.status}: 导出失败` }
+                    }));
+                    
+                    throw new Error(
+                        errorData.error?.message || 
+                        errorData.detail || 
+                        `HTTP ${res.status}: 导出失败`
+                    );
+                }
+                
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || '导出失败');
+
                 const rows = [['时间','用户ID','类型','状态','设备ID','详情']];
                 data.forEach(l => {
                     rows.push([
@@ -254,7 +342,8 @@
                 link.download = 'access_logs.csv';
                 link.click();
             } catch (e) {
-                setStatus(e.message, false, true);
+                console.error('导出CSV时发生错误:', e);
+                setStatus(`导出失败: ${e.message}`, false, true);
             }
         }
         loadLogs();

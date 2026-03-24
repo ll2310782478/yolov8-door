@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统设置 - SmartAccess</title>
+    <link rel="stylesheet" href="/static/css/common.css">
+    <script src="/static/js/common.js"></script>
+    <style>
+        .container { max-width: 960px; margin: 1.5rem auto; background: #fff; border-radius: 10px; padding: 1.5rem; box-shadow: 0 4px 15px rgba(0,0,0,0.07); }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; margin-bottom: .5rem; color: #333; font-weight: 600; }
+        .form-group input, .form-group select { width: 100%; padding: .75rem; border: 1px solid #ddd; border-radius: 6px; }
+        .button-group { display: flex; gap: 0.75rem; margin-top: 1rem; }
+        .btn { cursor: pointer; border: none; border-radius: 6px; padding: .75rem 1rem; }
+        .btn-primary { background: #667eea; color: #fff; }
+        .btn-secondary { background: #4a5568; color: #fff; }
+        .btn-info { background: #48bb78; color: #fff; }
+        .alert { padding: 10px 16px; border-radius: 6px; margin-bottom: 1rem; }
+        .alert-success { background: #e6fffa; color: #065f46; }
+        .alert-error { background: #ffe4e6; color: #9f1239; }
+        .current-config { margin-bottom: 2rem; padding: 1.5rem; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #667eea; }
+        .current-config h2 { margin-top: 0; color: #333; font-size: 1.2rem; }
+        .config-display { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; }
+        .config-item { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #e9ecef; }
+        .config-item:last-child { border-bottom: none; }
+        .config-label { font-weight: 600; color: #495057; }
+        .config-value { color: #6c757d; font-family: monospace; }
+        .config-value.configured { color: #28a745; }
+        .config-value.not-configured { color: #dc3545; }
+    </style>
+</head>
+<body>
+  <!-- 复制 dashboard 的完整左侧导航 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="icon">🔐</span>
+      <span class="title">SmartAccess</span>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
+    <nav>
+      <ul class="nav-menu">
+        <li class="nav-item"><a href="/web/dashboard" class="nav-link" data-tooltip="仪表盘"><span class="icon">📊</span><span class="label">仪表盘</span></a></li>
+        <li class="nav-item"><a href="/web/users" class="nav-link" data-tooltip="用户管理"><span class="icon">👥</span><span class="label">用户管理</span></a></li>
+        <li class="nav-item"><a href="/web/visitors" class="nav-link" data-tooltip="访客管理"><span class="icon">👤</span><span class="label">访客管理</span></a></li>
+        <li class="nav-item"><a href="/web/face" class="nav-link" data-tooltip="人脸识别"><span class="icon">😀</span><span class="label">人脸识别</span></a></li>
+        <li class="nav-item"><a href="/web/hardware" class="nav-link" data-tooltip="硬件设备"><span class="icon">🛠️</span><span class="label">硬件设备</span></a></li>
+        <li class="nav-item"><a href="/web/nfc" class="nav-link" data-tooltip="NFC管理"><span class="icon">📶</span><span class="label">NFC管理</span></a></li>
+        <li class="nav-item"><a href="/web/bluetooth" class="nav-link" data-tooltip="蓝牙设备"><span class="icon">🔵</span><span class="label">蓝牙设备</span></a></li>
+        <li class="nav-item"><a href="/web/remote-door" class="nav-link" data-tooltip="远程开门"><span class="icon">🚪</span><span class="label">远程开门</span></a></li>
+        <li class="nav-item"><a href="/web/logs" class="nav-link" data-tooltip="访问日志"><span class="icon">📜</span><span class="label">访问日志</span></a></li>
+        <li class="nav-item"><a href="/web/settings" class="nav-link active" data-tooltip="系统设置"><span class="icon">⚙️</span><span class="label">系统设置</span></a></li>
+        <li class="nav-item"><a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank"><span class="icon">📖</span><span class="label">API文档</span></a></li>
+      </ul>
+    </nav>
+  </aside>
+  <div class="main-content">
+    <div class="topbar"><h1>系统设置</h1></div>
+    <div class="content">
+        <div class="container">
+            <div id="statusMsg" class="alert" style="display:none;"></div>
+            
+            <!-- 当前SMTP配置显示区域 -->
+            <div class="current-config">
+                <h2>当前SMTP配置</h2>
+                <div class="config-display">
+                    <div class="config-item">
+                        <span class="config-label">SMTP服务器:</span>
+                        <span class="config-value" id="currentSmtpHost">未配置</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">端口:</span>
+                        <span class="config-value" id="currentSmtpPort">未配置</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">邮箱地址:</span>
+                        <span class="config-value" id="currentSmtpUser">未配置</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">配置状态:</span>
+                        <span class="config-value" id="currentSmtpStatus">未配置</span>
+                    </div>
+                </div>
+            </div>
+            
+            <h2>SMTP 邮件设置</h2>
+            <div class="form-group">
+                <label for="smtpProvider">邮件服务商</label>
+                <select id="smtpProvider" onchange="onProviderChange()">
+                    <option value="gmail">Gmail</option>
+                    <option value="163">163</option>
+                    <option value="qq">QQ</option>
+                    <option value="custom">自定义</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="smtpHost">SMTP 服务器</label>
+                <input type="text" id="smtpHost" value="smtp.gmail.com">
+            </div>
+            <div class="form-group">
+                <label for="smtpPort">端口</label>
+                <input type="number" id="smtpPort" value="587">
+            </div>
+            <div class="form-group">
+                <label for="smtpUser">邮箱地址</label>
+                <input type="email" id="smtpUser" placeholder="example@gmail.com">
+            </div>
+            <div class="form-group">
+                <label for="smtpPassword">密码/授权码</label>
+                <input type="password" id="smtpPassword" placeholder="邮箱授权码">
+                <small>Gmail 需要应用专用密码，163/QQ 需要授权码。</small>
+            </div>
+            <div class="button-group">
+                <button class="btn btn-primary" onclick="saveSmtpConfig()">保存配置</button>
+                <button class="btn btn-info" onclick="testSmtpConfig()">测试发送</button>
+                <button class="btn btn-secondary" onclick="loadSmtpConfig()">重新加载</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+const API_URL = window.location.origin + '/api';
+const SMTP_PROVIDERS = {
+    gmail: { host: 'smtp.gmail.com', port: '587' },
+    163: { host: 'smtp.163.com', port: '465' },
+    qq: { host: 'smtp.qq.com', port: '587' },
+    custom: { host: '', port: '' }
+};
+
+function setStatus(text, type='success') {
+    const el = document.getElementById('statusMsg');
+    el.style.display = 'block';
+    el.textContent = text;
+    el.className = 'alert ' + (type === 'success' ? 'alert-success' : 'alert-error');
+}
+
+function onProviderChange() {
+    const p = document.getElementById('smtpProvider').value;
+    const c = SMTP_PROVIDERS[p] || SMTP_PROVIDERS.gmail;
+    document.getElementById('smtpHost').value = c.host;
+    document.getElementById('smtpPort').value = c.port;
+    document.getElementById('smtpHost').readOnly = (p !== 'custom');
+    document.getElementById('smtpPort').readOnly = (p !== 'custom');
+}
+
+async function saveSmtpConfig() {
+    const body = {
+        smtp_host: document.getElementById('smtpHost').value,
+        smtp_port: document.getElementById('smtpPort').value,
+        smtp_user: document.getElementById('smtpUser').value,
+        smtp_password: document.getElementById('smtpPassword').value
+    };
+    try {
+        const resp = await fetch(`${API_URL}/system/smtp-config`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeaders()
+            },
+            body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'success') {
+            // 保存成功后更新显示区域
+            updateCurrentConfigDisplay(body);
+            setStatus('SMTP 配置保存成功', 'success');
+        } else {
+            setStatus('SMTP 配置保存失败：' + (data.detail || data.message || JSON.stringify(data)), 'error');
+        }
+    } catch (e) { setStatus('网络错误:' + e.message, 'error'); }
+}
+
+async function testSmtpConfig() {
+    const to = prompt('请输入测试接收邮箱地址:');
+    if (!to) return;
+    try {
+        const resp = await fetch(`${API_URL}/visitors/test-email`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeaders()
+            },
+            body: JSON.stringify({email: to})
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'success') {
+            setStatus('测试邮件发送成功，请检查邮箱', 'success');
+        } else {
+            setStatus('测试邮件失败：' + (data.detail || data.message || JSON.stringify(data)), 'error');
+        }
+    } catch (e) { setStatus('网络错误:' + e.message, 'error'); }
+}
+
+async function loadSmtpConfig() {
+    try {
+        const resp = await fetch(`${API_URL}/system/smtp-config`, {
+            headers: authHeaders()
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'success') {
+            const cfg = data.config || {};
+            document.getElementById('smtpHost').value = cfg.smtp_host || 'smtp.gmail.com';
+            document.getElementById('smtpPort').value = cfg.smtp_port || '587';
+            document.getElementById('smtpUser').value = cfg.smtp_user || '';
+            document.getElementById('smtpPassword').value = '';
+            
+            // 更新显示区域
+            updateCurrentConfigDisplay(cfg);
+            setStatus('SMTP 配置加载成功', 'success');
+        } else {
+            // 更新显示区域为未配置状态
+            updateCurrentConfigDisplay({});
+            setStatus('未获取到SMTP配置，请先保存', 'error');
+        }
+    } catch (e) { 
+        updateCurrentConfigDisplay({});
+        setStatus('网络错误:'+e.message,'error'); 
+    }
+}
+
+function updateCurrentConfigDisplay(cfg) {
+    const hostEl = document.getElementById('currentSmtpHost');
+    const portEl = document.getElementById('currentSmtpPort');
+    const userEl = document.getElementById('currentSmtpUser');
+    const statusEl = document.getElementById('currentSmtpStatus');
+    
+    const isConfigured = cfg.smtp_host && cfg.smtp_user;
+    
+    hostEl.textContent = cfg.smtp_host || '未配置';
+    portEl.textContent = cfg.smtp_port || '未配置';
+    userEl.textContent = cfg.smtp_user || '未配置';
+    statusEl.textContent = isConfigured ? '已配置' : '未配置';
+    
+    // 添加样式类
+    [hostEl, portEl, userEl, statusEl].forEach(el => {
+        el.classList.remove('configured', 'not-configured');
+        el.classList.add(isConfigured ? 'configured' : 'not-configured');
+    });
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
+  // 认证守卫
+  const token = localStorage.getItem('token');
+  if (!token) {
+    window.location.href = '/web/auth';
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/auth/me', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error('未授权');
+  } catch (err) {
+    localStorage.removeItem('token');
+    window.location.href = '/web/auth';
+  }
+  
+  // 加载页面配置
+  onProviderChange(); 
+  loadSmtpConfig();
+});
+</script>
+</body>
+</html>

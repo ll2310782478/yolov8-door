@@ -243,6 +243,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="/web/settings" class="nav-link">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="/docs" class="nav-link" target="_blank">
             <span class="icon">📖</span>
             <span class="label">API文档</span>
@@ -438,5 +444,24 @@
     });
     </script>
   <script src="/static/js/common.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/web/auth';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('未授权');
+      } catch (err) {
+        localStorage.removeItem('token');
+        window.location.href = '/web/auth';
+      }
+    });
+  </script>
   </body>
 </html>

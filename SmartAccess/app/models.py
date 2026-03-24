@@ -1,6 +1,7 @@
 """数据库 ORM 模型"""
 
 from datetime import datetime, timedelta
+from app.time_utils import now_utc8
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, LargeBinary, Float, Enum, Index
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -17,9 +18,10 @@ class User(Base):
     email = Column(String(100), unique=True, index=True)
     phone = Column(String(20))
     full_name = Column(String(100))
+    user_role = Column(String(20), default="access_user", nullable=False, index=True)  # admin, access_user
     is_active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
     
     # 关系
     faces = relationship("FaceData", back_populates="user", cascade="all, delete-orphan")
@@ -43,11 +45,11 @@ class FaceData(Base):
     is_primary = Column(Boolean, default=False)  # 是否为主要人脸
     is_active = Column(Boolean, default=True)  # 是否启用
     access_level = Column(String(50), default="door1")  # 允许通行的门：door1, door2, all
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
     
     # 人脸权限和时效
-    permission_start_date = Column(DateTime, default=datetime.utcnow)
+    permission_start_date = Column(DateTime, default=now_utc8)
     permission_end_date = Column(DateTime, nullable=True)  # 为空表示永久有效
     time_periods = Column(Text)  # JSON 格式：{"monday": ["09:00-17:00"], ...}
     max_daily_uses = Column(Integer, default=0)  # 0 表示无限制
@@ -68,7 +70,7 @@ class AccessLog(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     access_type = Column(String(20))  # face, nfc, qrcode, bluetooth, manual
     status = Column(String(20))  # success, failed, denied
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=now_utc8, index=True)
     device_id = Column(String(50), index=True)
     details = Column(Text)  # 详细信息
     
@@ -88,11 +90,11 @@ class NFCCard(Base):
     door_id = Column(String(20), default="door1")  # 门编号：door1/door2
     device_id = Column(String(50), nullable=True)  # 绑定的设备ID（如door_controller_2），为空则对所有设备有效
     is_active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
     
     # NFC 卡片权限和时效
-    permission_start_date = Column(DateTime, default=datetime.utcnow)
+    permission_start_date = Column(DateTime, default=now_utc8)
     permission_end_date = Column(DateTime, nullable=True)  # 为空表示永久有效
     time_periods = Column(Text)  # JSON 格式：{"monday": ["09:00-17:00"], ...}
     max_daily_uses = Column(Integer, default=0)  # 0 表示无限制
@@ -114,12 +116,12 @@ class BluetoothBinding(Base):
     device_name = Column(String(100))  # 设备名称
     is_paired = Column(Boolean, default=False)  # 是否已配对
     is_active = Column(Boolean, default=True)  # 是否启用此绑定
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
     last_connect_time = Column(DateTime)  # 最后连接时间
     
     # 蓝牙设备权限和时效
-    permission_start_date = Column(DateTime, default=datetime.utcnow)
+    permission_start_date = Column(DateTime, default=now_utc8)
     permission_end_date = Column(DateTime, nullable=True)
     time_periods = Column(Text)  # JSON 格式
     max_daily_uses = Column(Integer, default=0)
@@ -142,7 +144,7 @@ class BluetoothPairingRecord(Base):
     device_ltk = Column(String(32))  # 设备LTK（Long Term Key）- 16字节十六进制
     device_name = Column(String(100))  # 配对时的设备名
     pairing_method = Column(String(20), default="numeric_comparison")  # 配对方式
-    pairing_timestamp = Column(DateTime, default=datetime.utcnow)  # 配对时间
+    pairing_timestamp = Column(DateTime, default=now_utc8)  # 配对时间
     last_connection = Column(DateTime)  # 最后使用时间
     connection_count = Column(Integer, default=0)  # 连接次数
     firmware_version = Column(String(50))  # 设备固件版本
@@ -162,13 +164,13 @@ class Visitor(Base):
     email = Column(String(100), index=True)
     company = Column(String(100))
     purpose = Column(String(255))
-    check_in_time = Column(DateTime, default=datetime.utcnow)
+    check_in_time = Column(DateTime, default=now_utc8)
     check_out_time = Column(DateTime)
     is_checked_out = Column(Boolean, default=False, index=True)
     qr_code_path = Column(String(255))
     qr_code_image = Column(LargeBinary)  # 存储二维码图片二进制数据
     qr_code_expires_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=now_utc8, index=True)
     
     # 访客权限信息
     access_locations = Column(Text)  # 允许访问的区域，JSON 格式
@@ -199,6 +201,16 @@ class Visitor(Base):
         perm = self.current_permission
         return perm.accessed_count if perm else 0
 
+    @property
+    def permission_start_time(self):
+        perm = self.current_permission
+        return perm.start_time if perm else None
+
+    @property
+    def permission_expires_at(self):
+        perm = self.current_permission
+        return perm.expires_at if perm else None
+
 
 class VisitorPermission(Base):
     """访客权限模型"""
@@ -210,8 +222,8 @@ class VisitorPermission(Base):
     qr_code_token = Column(String(255), unique=True, index=True, nullable=False)  # 二维码令牌
     permission_type = Column(String(20))  # qrcode, temp_pass
     is_active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    start_time = Column(DateTime, default=datetime.utcnow) # 生效开始时间
+    created_at = Column(DateTime, default=now_utc8)
+    start_time = Column(DateTime, default=now_utc8) # 生效开始时间
     expires_at = Column(DateTime, nullable=False)  # 权限过期时间
     max_uses = Column(Integer, default=1) # 最大使用次数
     accessed_count = Column(Integer, default=0)  # 使用次数
@@ -236,7 +248,7 @@ class SystemConfig(Base):
     key = Column(String(50), unique=True, index=True, nullable=False)
     value = Column(Text)
     description = Column(String(255))
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
 
 
 class Role(Base):
@@ -247,8 +259,8 @@ class Role(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
     role_name = Column(String(50), nullable=False)  # admin, manager, user
     permissions = Column(Text)  # 权限列表 (JSON)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
     
     # 关系
     user = relationship("User", back_populates="role")
@@ -263,14 +275,14 @@ class UserPermission(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     permission_type = Column(String(50), nullable=False)  # face_recognition, nfc, bluetooth, qrcode
     is_enabled = Column(Boolean, default=True)
-    start_date = Column(DateTime, default=datetime.utcnow)
+    start_date = Column(DateTime, default=now_utc8)
     end_date = Column(DateTime, nullable=True)  # 为空表示永久有效
     time_periods = Column(Text)  # JSON 格式，时间段限制
     max_daily_uses = Column(Integer, default=0)  # 0 表示无限制
     daily_use_count = Column(Integer, default=0)
     last_use_date = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
     
     # 关系
     user = relationship("User", back_populates="permissions")
@@ -289,8 +301,8 @@ class HardwareDevice(Base):
     location = Column(String(100))
     is_active = Column(Boolean, default=True, index=True)
     last_heartbeat = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
+    updated_at = Column(DateTime, default=now_utc8, onupdate=now_utc8)
     
     # 设备特定信息（JSON 格式存储扩展字段）
     device_config = Column(Text)  # 设备配置信息
@@ -312,7 +324,7 @@ class NFCTask(Base):
     payload = Column(Text, nullable=True)  # 可选的命令负载（JSON）
     status = Column(String(20), default="pending")  # pending, sent, done, canceled
     result = Column(Text, nullable=True)  # 设备执行后的返回内容（JSON/text）
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=now_utc8)
     sent_at = Column(DateTime)
     consumed_at = Column(DateTime)
 
@@ -328,5 +340,6 @@ class SystemLog(Base):
     message = Column(Text)
     module = Column(String(100))  # 日志来源模块
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=now_utc8, index=True)
     details = Column(Text)  # 详细信息（JSON 格式）
+

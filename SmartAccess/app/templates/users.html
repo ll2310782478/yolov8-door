@@ -128,6 +128,25 @@
   </head>
 <body>
   <script src="/static/js/common.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/web/auth';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('未授权');
+      } catch (err) {
+        localStorage.removeItem('token');
+        window.location.href = '/web/auth';
+      }
+    });
+  </script>
   <!-- 左侧导航栏 -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
@@ -192,6 +211,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="/web/settings" class="nav-link" data-tooltip="系统设置">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
             <span class="icon">📖</span>
             <span class="label">API文档</span>
@@ -225,6 +250,7 @@
             <thead>
                 <tr>
                     <th>用户名</th>
+                    <th>角色</th>
                     <th>邮箱</th>
                     <th>电话</th>
                     <th>全名</th>
@@ -272,6 +298,14 @@
                     <label for="fullName">全名</label>
                     <input type="text" id="fullName">
                 </div>
+
+                <div class="form-group">
+                    <label for="userRole">角色</label>
+                    <select id="userRole">
+                        <option value="access_user">门禁用户</option>
+                        <option value="admin">系统管理员</option>
+                    </select>
+                </div>
                 
                 <button type="submit">保存用户</button>
             </form>
@@ -280,8 +314,8 @@
     
       <script>
 
-        const token = localStorage.getItem('smartaccess_token');
-        const username = localStorage.getItem('smartaccess_username');
+        const token = localStorage.getItem('token');
+        const username = localStorage.getItem('username');
         if (!token) {
             window.location.href = '/web/auth';
         } else {
@@ -301,8 +335,10 @@
                     tbody.innerHTML = '';
                     data.forEach(user => {
                         const row = document.createElement('tr');
+                        const roleLabel = user.user_role === 'admin' ? '🛡️ 系统管理员' : '🔑 门禁用户';
                         row.innerHTML = `
                             <td>${user.username}</td>
+                            <td>${roleLabel}</td>
                             <td>${user.email || '-'}</td>
                             <td>${user.phone || '-'}</td>
                             <td>${user.full_name || '-'}</td>
@@ -321,16 +357,37 @@
                 .catch(error => console.error('Error:', error));
         }
         function openAddUserModal() {
+            editingUserId = null;
             document.getElementById('userForm').reset();
+            document.getElementById('password').setAttribute('required', 'required');
             document.getElementById('modalTitle').textContent = '添加新用户';
+            document.getElementById('userRole').value = 'access_user';
             document.getElementById('userModal').style.display = 'block';
         }
         function closeUserModal() {
             document.getElementById('userModal').style.display = 'none';
         }
+        let editingUserId = null;
         function editUser(userId) {
-            // 实现编辑功能
-            alert('编辑功能开发中...');
+            editingUserId = userId;
+            fetch(`/api/users/${userId}`, { headers: authHeaders() })
+                .then(async response => {
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.detail || '获取用户信息失败');
+                    return data;
+                })
+                .then(user => {
+                    document.getElementById('modalTitle').textContent = '编辑用户';
+                    document.getElementById('username').value = user.username || '';
+                    document.getElementById('password').value = '';
+                    document.getElementById('password').removeAttribute('required');
+                    document.getElementById('email').value = user.email || '';
+                    document.getElementById('phone').value = user.phone || '';
+                    document.getElementById('fullName').value = user.full_name || '';
+                    document.getElementById('userRole').value = user.user_role || 'access_user';
+                    document.getElementById('userModal').style.display = 'block';
+                })
+                .catch(error => alert(error.message));
         }
         function deleteUser(userId) {
             if (confirm('确定要删除此用户吗？')) {
@@ -353,32 +410,59 @@
         // 表单提交
         document.getElementById('userForm').addEventListener('submit', function(e) {
             e.preventDefault();
-            const userData = {
-                username: document.getElementById('username').value,
-                password: document.getElementById('password').value,
-                email: document.getElementById('email').value,
-                phone: document.getElementById('phone').value,
-                full_name: document.getElementById('fullName').value
-            };
-            fetch('/api/users/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...authHeaders()
-                },
-                body: JSON.stringify(userData)
-            })
-            .then(async response => {
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.detail || '创建失败');
-                return data;
-            })
-            .then(data => {
-                alert('用户创建成功！');
-                closeUserModal();
-                loadUsers();
-            })
-            .catch(error => alert(error.message));
+            if (editingUserId) {
+                // 编辑模式
+                const updateData = {
+                    email: document.getElementById('email').value,
+                    phone: document.getElementById('phone').value,
+                    full_name: document.getElementById('fullName').value,
+                    user_role: document.getElementById('userRole').value
+                };
+                const pwd = document.getElementById('password').value;
+                if (pwd) updateData.password = pwd;
+                fetch(`/api/users/${editingUserId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify(updateData)
+                })
+                .then(async response => {
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.detail || '更新失败');
+                    return data;
+                })
+                .then(data => {
+                    alert('用户更新成功！');
+                    closeUserModal();
+                    loadUsers();
+                })
+                .catch(error => alert(error.message));
+            } else {
+                // 新增模式
+                const userData = {
+                    username: document.getElementById('username').value,
+                    password: document.getElementById('password').value,
+                    email: document.getElementById('email').value,
+                    phone: document.getElementById('phone').value,
+                    full_name: document.getElementById('fullName').value,
+                    user_role: document.getElementById('userRole').value
+                };
+                fetch('/api/users/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify(userData)
+                })
+                .then(async response => {
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.detail || '创建失败');
+                    return data;
+                })
+                .then(data => {
+                    alert('用户创建成功！');
+                    closeUserModal();
+                    loadUsers();
+                })
+                .catch(error => alert(error.message));
+            }
         });
         // 页面加载时获取用户列表
         loadUsers();

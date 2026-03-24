@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>智能门禁终端 - SmartAccess</title>
+  <link rel="stylesheet" href="/static/css/common.css">
   <style>
     body {
         margin: 0;
@@ -230,7 +231,7 @@
             </div>
             <div class="clock-widget">
                 <div class="time" id="timeDisplay">00:00</div>
-                <div class="date" id="dateDisplay">2024-01-01 星期一</div>
+                <div class="date" id="dateDisplay">2026-01-01 星期一</div>
             </div>
         </div>
 
@@ -271,7 +272,7 @@
     </div>
 
     <script>
-        const token = localStorage.getItem('smartaccess_token');
+        const token = localStorage.getItem('token');
         // 门禁终端不需要登录即可使用 (Kiosk Mode)
         // if (!token) window.location.href = '/web/auth';
         

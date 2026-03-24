@@ -20,9 +20,14 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User, FaceData
 from app.services.face_recognition import get_face_service
+from app.services.qrcode_service import verify_qrcode_token
+from app.auth import get_current_user, require_role, TokenData
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/face-recognition", tags=["Face Recognition"])
+
+# 复用 QR 检测器实例，避免每次请求重新创建
+_qr_detector = cv2.QRCodeDetector()
 
 
 # ================== Pydantic 模型 ==================
@@ -36,9 +41,11 @@ class FaceRecognitionResult(BaseModel):
     """人脸识别结果"""
     name: str
     similarity: float
-    status: str  # 'recognized' | 'unknown' | 'no_features'
+    status: str  # 'recognized' | 'unknown' | 'no_features' | 'no_face' | 'no_registered'
     box: tuple
     access_level: Optional[str] = "door1"
+    source: Optional[str] = "face"  # 'face' | 'qrcode'
+    visitor_id: Optional[int] = None  # 访客 QR 识别时携带
 
 
 class FaceDeviceInfo(BaseModel):
@@ -75,12 +82,60 @@ async def recognize_faces(
         if frame is None:
             raise HTTPException(status_code=400, detail="无效的图像文件")
 
-        # 获取人脸服务
+        results = []
+        user_access_map = {}
+
+        # =============================================
+        # 第一阶段：QR 码快速检测（优先，速度极快 ~5ms）
+        # =============================================
+        qr_recognized = False
+        try:
+            qr_data, qr_bbox, _ = _qr_detector.detectAndDecode(frame)
+            if qr_data and qr_bbox is not None:
+                is_valid, verify_result = verify_qrcode_token(qr_data, db, device_id="face_gate")
+                if is_valid:
+                    points = qr_bbox[0]
+                    box = (
+                        int(min(p[0] for p in points)),
+                        int(min(p[1] for p in points)),
+                        int(max(p[0] for p in points)),
+                        int(max(p[1] for p in points)),
+                    )
+                    results.append({
+                        "name": verify_result["visitor_name"],
+                        "similarity": 1.0,
+                        "status": "recognized",
+                        "box": box,
+                        "access_level": verify_result.get("access_level", "door1"),
+                        "source": "qrcode",
+                        "visitor_id": verify_result.get("visitor_id")
+                    })
+                    qr_recognized = True
+                    logger.info(f"QR 快速识别成功: {verify_result['visitor_name']}")
+                else:
+                    logger.info(f"QR 验证失败: {verify_result.get('message', '')}")
+        except Exception as e:
+            logger.warning(f"QR 检测异常: {e}")
+
+        # QR 码已识别成功时跳过耗时的人脸识别
+        if qr_recognized:
+            return [FaceRecognitionResult(
+                name=results[0]['name'],
+                similarity=1.0,
+                status='recognized',
+                box=results[0]['box'],
+                access_level=results[0]['access_level'],
+                source='qrcode',
+                visitor_id=results[0].get('visitor_id')
+            )]
+
+        # =============================================
+        # 第二阶段：人脸识别（耗时较长 ~200ms+）
+        # =============================================
         face_service = get_face_service()
 
         # 加载已知的人脸特征
         known_embeddings = {}
-        user_access_map = {}
         face_records = db.query(FaceData).filter(FaceData.is_active == True).all()
 
         for face_record in face_records:
@@ -88,45 +143,31 @@ async def recognize_faces(
                 user = db.query(User).filter(User.id == face_record.user_id).first()
                 if user and face_record.embedding_data:
                     try:
-                        # 从二进制数据恢复 numpy 数组
                         embedding = np.frombuffer(face_record.embedding_data, dtype=np.float32)
                         known_embeddings[user.username] = embedding
                         user_access_map[user.username] = face_record.access_level
                     except Exception as e:
                         logger.warning(f"无法加载用户 {user.username} 的人脸特征: {e}")
 
-        # 识别人脸
+        if not known_embeddings:
+            return [FaceRecognitionResult(
+                name='无已注册人脸',
+                similarity=0.0,
+                status='no_registered',
+                box=(0, 0, 0, 0),
+                access_level=None
+            )]
+
         results = face_service.recognize_face_in_frame(frame, known_embeddings)
 
-        # --- 二维码识别集成 ---
-        try:
-            detector = cv2.QRCodeDetector()
-            data, bbox, _ = detector.detectAndDecode(frame)
-            
-            if data and bbox is not None:
-                from app.services.qrcode_service import verify_qrcode_token
-                # 尝试验证二维码
-                is_valid, verify_result = verify_qrcode_token(data, db, device_id="face_gate")
-                
-                if is_valid:
-                    # 将二维码结果转换为人脸识别结果格式
-                    points = bbox[0]
-                    x_min = int(min(p[0] for p in points))
-                    y_min = int(min(p[1] for p in points))
-                    x_max = int(max(p[0] for p in points))
-                    y_max = int(max(p[1] for p in points))
-                    
-                    qr_result = {
-                        "name": verify_result["visitor_name"],
-                        "similarity": 1.0,
-                        "status": "recognized",
-                        "box": (x_min, y_min, x_max, y_max),
-                        "access_level": verify_result.get("access_level", "door1")
-                    }
-                    results.append(qr_result)
-                    logger.info(f"QR Code recognized: {verify_result['visitor_name']}")
-        except Exception as e:
-            logger.error(f"QR Code detection error: {e}")
+        if not results:
+            return [FaceRecognitionResult(
+                name='未检测到人脸',
+                similarity=0.0,
+                status='no_face',
+                box=(0, 0, 0, 0),
+                access_level=None
+            )]
 
         # 转换为 API 响应格式
         final_results = []
@@ -155,7 +196,8 @@ async def register_user_face(
     user_id: int,
     access_level: str = Form("door1"),
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role("admin"))
 ):
     """
     注册用户人脸
@@ -221,7 +263,7 @@ async def register_user_face(
 
 
 @router.get("/info", response_model=FaceDeviceInfo)
-async def get_device_info():
+async def get_device_info(current_user: TokenData = Depends(require_role("admin"))):
     """
     获取人脸识别设备信息
 
@@ -240,7 +282,7 @@ async def get_device_info():
 
 
 @router.post("/cache/clear")
-async def clear_recognition_cache():
+async def clear_recognition_cache(current_user: TokenData = Depends(require_role("admin"))):
     """
     清空识别缓存
 
@@ -261,10 +303,11 @@ async def clear_recognition_cache():
         raise HTTPException(status_code=500, detail=f"清空缓存失败: {e}")
 
 
-@router.get("/compare")
+@router.post("/compare")
 async def compare_two_faces(
     file1: UploadFile = File(...),
     file2: UploadFile = File(...),
+    current_user: TokenData = Depends(require_role("admin")),
 ):
     """
     对比两张人脸的相似度
@@ -323,7 +366,8 @@ async def batch_register_faces(
     user_id: int,
     access_level: str = Form("door1"),
     files: List[UploadFile] = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role("admin"))
 ):
     """
     批量注册用户人脸

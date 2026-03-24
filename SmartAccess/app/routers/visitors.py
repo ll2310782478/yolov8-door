@@ -5,7 +5,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Visitor, VisitorPermission, AccessLog, SystemConfig
 from app.utils import check_permission_valid, delete_file
+from app.auth import get_current_user, require_role, TokenData
 from datetime import datetime, timedelta
+from app.time_utils import now_utc8
 from typing import List, Optional
 from pydantic import BaseModel
 import qrcode
@@ -14,12 +16,16 @@ import uuid
 import secrets
 import yagmail
 import io
+import logging
+import smtplib
 
 router = APIRouter(
     prefix="/api/visitors",
     tags=["visitors"],
     responses={404: {"description": "Not found"}},
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== Pydantic 模型 ====================
@@ -66,6 +72,8 @@ class VisitorResponse(BaseModel):
     access_level: Optional[str] = "door1"
     max_uses: Optional[int] = 1
     accessed_count: Optional[int] = 0
+    permission_start_time: Optional[datetime] = None
+    permission_expires_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -104,14 +112,6 @@ class SendQRCodeRequest(BaseModel):
     send_to: str  # email 或 phone
     send_via: str  # email 或 sms
 
-
-class EmailConfig(BaseModel):
-    smtp_server: str
-    smtp_port: int
-    smtp_user: str
-    smtp_password: str
-    sender_email: str = None
-
 # ==================== 访客管理端点 ====================
 
 def generate_qrcode_bytes(content: str) -> bytes:
@@ -145,16 +145,195 @@ def generate_qrcode(content: str) -> str:
     qr.make(fit=True)
     
     img = qr.make_image(fill_color="black", back_color="white")
-    filename = f"visitor_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.png"
+    filename = f"visitor_{now_utc8().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.png"
     qrcode_path = os.path.join(qrcode_dir, filename)
     img.save(qrcode_path)
     
     return qrcode_path
 
 
+def _cfg(db: Session, key: str, default: Optional[str] = None) -> Optional[str]:
+    item = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    return item.value if item else default
+
+
+def _normalize_security(port: int, security: Optional[str]) -> str:
+    mode = (security or "auto").strip().lower()
+    if mode not in {"auto", "ssl", "starttls"}:
+        mode = "auto"
+    if mode == "auto":
+        # 常见约定：587 使用 STARTTLS，其余默认 SSL
+        return "starttls" if int(port) == 587 else "ssl"
+    return mode
+
+
+def _build_mail_channels(db: Session) -> List[dict]:
+    channels: List[dict] = []
+
+    primary = {
+        "name": "primary",
+        "host": _cfg(db, "smtp_host", "smtp.gmail.com"),
+        "port": int(_cfg(db, "smtp_port", "465") or "465"),
+        "user": _cfg(db, "smtp_user", os.getenv("SMTP_USER", "")),
+        "password": _cfg(db, "smtp_password", os.getenv("SMTP_PASSWORD", "")),
+        "security": _cfg(db, "smtp_security", "auto"),
+    }
+    if primary["user"] and primary["password"]:
+        channels.append(primary)
+
+    backup_enabled = (_cfg(db, "backup_smtp_enabled", "false") or "false").lower() == "true"
+    if backup_enabled:
+        backup = {
+            "name": "backup",
+            "host": _cfg(db, "backup_smtp_host", ""),
+            "port": int(_cfg(db, "backup_smtp_port", "587") or "587"),
+            "user": _cfg(db, "backup_smtp_user", ""),
+            "password": _cfg(db, "backup_smtp_password", ""),
+            "security": _cfg(db, "backup_smtp_security", "auto"),
+        }
+        if backup["host"] and backup["user"] and backup["password"]:
+            channels.append(backup)
+        else:
+            logger.warning("备用SMTP已启用，但配置不完整，已跳过备用通道")
+
+    return channels
+
+
+def _send_mail_via_channel(channel: dict, to: str, subject: str, body: str, attachment_path: str):
+    mode = _normalize_security(channel["port"], channel.get("security"))
+    smtp_kwargs = {
+        "user": channel["user"],
+        "password": channel["password"],
+        "host": channel["host"],
+        "port": int(channel["port"]),
+        "smtp_ssl": mode == "ssl",
+        "smtp_starttls": mode == "starttls",
+    }
+    yag = yagmail.SMTP(**smtp_kwargs)
+    yag.send(to=to, subject=subject, contents=[body, attachment_path])
+
+
+def send_qrcode_email_internal(visitor: Visitor, permission: VisitorPermission, db: Session) -> dict:
+    """发送访客二维码邮件（内部复用函数）"""
+    if not visitor.email:
+        raise HTTPException(status_code=400, detail="访客未设置邮箱")
+
+    # 检查二维码文件是否存在，如果不存在则从DB恢复或重新生成
+    if not visitor.qr_code_path or not os.path.exists(visitor.qr_code_path):
+        if visitor.qr_code_image:
+            # 从DB恢复文件
+            qrcode_dir = "static/qrcodes"
+            os.makedirs(qrcode_dir, exist_ok=True)
+            filename = f"visitor_{visitor.id}_{uuid.uuid4().hex[:8]}.png"
+            qrcode_path = os.path.join(qrcode_dir, filename)
+            with open(qrcode_path, "wb") as f:
+                f.write(visitor.qr_code_image)
+            visitor.qr_code_path = qrcode_path
+            db.commit()
+        else:
+            # 重新生成
+            qrcode_path = generate_qrcode(permission.qr_code_token)
+            visitor.qr_code_path = qrcode_path
+            db.commit()
+
+    channels = _build_mail_channels(db)
+    if not channels:
+        raise HTTPException(status_code=400, detail="邮件服务器未配置，请先在设置中配置邮件服务")
+
+    # 准备邮件内容
+    subject = f"SmartAccess 访客二维码 - {visitor.name}"
+
+    body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5;">
+        <div style="max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h2 style="color: #667eea; text-align: center;">SmartAccess 访客通行证</h2>
+
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin: 0 0 10px 0;">访客信息</h3>
+                <p style="margin: 5px 0;"><strong>姓名：</strong>{visitor.name}</p>
+                <p style="margin: 5px 0;"><strong>公司：</strong>{visitor.company or '未提供'}</p>
+                <p style="margin: 5px 0;"><strong>访问目的：</strong>{visitor.purpose or '一般访问'}</p>
+                <p style="margin: 5px 0;"><strong>有效期至：</strong>{permission.expires_at.strftime('%Y-%m-%d %H:%M')}</p>
+                <p style="margin: 5px 0;"><strong>剩余次数：</strong>{permission.max_uses - permission.accessed_count if permission.max_uses > 0 else '无限制'}</p>
+            </div>
+
+            <div style="text-align: center; margin: 30px 0;">
+                <p style="font-size: 16px; color: #333; margin-bottom: 15px;">
+                    ⬇️ 请使用下方二维码进行门禁验证 ⬇️
+                </p>
+                <p style="font-size: 14px; color: #666; margin-top: 10px;">
+                    到达门口后，请在摄像头或扫码设备前出示此二维码
+                </p>
+            </div>
+
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <h4 style="color: #333; margin-top: 0;">使用说明：</h4>
+                <ol style="color: #666; line-height: 1.8;">
+                    <li>打开此邮件查看附件中的二维码图片</li>
+                    <li>保存二维码到手机相册（或直接使用邮件附件）</li>
+                    <li>到达门口时，将二维码对准摄像头</li>
+                    <li>等待验证通过后即可进入</li>
+                </ol>
+            </div>
+
+            <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                <p style="margin: 0; color: #856404;"><strong>⚠️ 重要提示：</strong></p>
+                <ul style="color: #856404; margin: 10px 0 0 0; padding-left: 20px;">
+                    <li>此二维码仅限本次访问使用</li>
+                    <li>请勿将二维码转发他人</li>
+                    <li>如有问题请联系前台</li>
+                </ul>
+            </div>
+
+            <p style="text-align: center; color: #999; font-size: 12px; margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px;">
+                此邮件由 SmartAccess 智能门禁系统自动发送<br/>
+                © 2026 SmartAccess. All rights reserved.
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+
+    send_errors: List[str] = []
+    used_channel = ""
+    for channel in channels:
+        try:
+            _send_mail_via_channel(
+                channel=channel,
+                to=visitor.email,
+                subject=subject,
+                body=body,
+                attachment_path=visitor.qr_code_path,
+            )
+            used_channel = channel["name"]
+            break
+        except Exception as e:
+            send_errors.append(f"{channel['name']}: {type(e).__name__} - {str(e)}")
+            logger.warning(f"邮件通道发送失败 [{channel['name']}]: {e}")
+
+    if not used_channel:
+        raise HTTPException(
+            status_code=502,
+            detail="; ".join(send_errors) if send_errors else "所有邮件通道发送失败"
+        )
+
+    permission.email_sent = True
+    permission.email_sent_at = now_utc8()
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"二维码已成功发送到邮箱 {visitor.email}（通道: {used_channel}）",
+        "sent_to": visitor.email,
+        "qrcode_path": visitor.qr_code_path,
+        "channel": used_channel
+    }
+
+
 @router.post("/", response_model=VisitorResponse)
-def create_visitor(visitor: VisitorCreate, db: Session = Depends(get_db)):
-    """创建访客记录"""
+def create_visitor(visitor: VisitorCreate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """创建访客记录（仅管理员）"""
     import os
     
     # 确定过期时间
@@ -162,9 +341,9 @@ def create_visitor(visitor: VisitorCreate, db: Session = Depends(get_db)):
         expires_at = visitor.end_time
     else:
         expires_hours = int(os.getenv("VISITOR_QR_EXPIRES_HOURS", "24"))
-        expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
+        expires_at = now_utc8() + timedelta(hours=expires_hours)
     
-    start_time = visitor.start_time or datetime.utcnow()
+    start_time = visitor.start_time or now_utc8()
     
     db_visitor = Visitor(
         name=visitor.name,
@@ -205,6 +384,14 @@ def create_visitor(visitor: VisitorCreate, db: Session = Depends(get_db)):
     
     db.commit()
     db.refresh(db_visitor)
+
+    # 创建成功后立即尝试邮件发送（访客填写邮箱时）
+    if db_visitor.email:
+        try:
+            send_qrcode_email_internal(db_visitor, permission, db)
+        except Exception as e:
+            logger.error(f"访客创建后自动发送邮件失败 visitor_id={db_visitor.id}: {e}")
+
     return db_visitor
 
 
@@ -214,9 +401,10 @@ def list_visitors(
     limit: int = 100,
     is_checked_out: Optional[bool] = None,
     company: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role("admin"))
 ):
-    """获取访客列表"""
+    """获取访客列表（仅管理员）"""
     query = db.query(Visitor)
     
     if is_checked_out is not None:
@@ -229,8 +417,8 @@ def list_visitors(
 
 
 @router.get("/{visitor_id}", response_model=VisitorResponse)
-def get_visitor(visitor_id: int, db: Session = Depends(get_db)):
-    """获取访客详情"""
+def get_visitor(visitor_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """获取访客详情（仅管理员）"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
@@ -238,8 +426,8 @@ def get_visitor(visitor_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{visitor_id}", response_model=VisitorResponse)
-def update_visitor(visitor_id: int, visitor_update: VisitorUpdate, db: Session = Depends(get_db)):
-    """更新访客信息"""
+def update_visitor(visitor_id: int, visitor_update: VisitorUpdate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """更新访客信息（仅管理员）"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
@@ -263,8 +451,8 @@ def update_visitor(visitor_id: int, visitor_update: VisitorUpdate, db: Session =
 
 
 @router.delete("/{visitor_id}")
-def delete_visitor(visitor_id: int, db: Session = Depends(get_db)):
-    """删除访客记录"""
+def delete_visitor(visitor_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
+    """删除访客记录（仅管理员）"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
@@ -309,45 +497,6 @@ def get_visitor_qrcode_image(visitor_id: int, db: Session = Depends(get_db)):
     raise HTTPException(status_code=404, detail="二维码不存在")
 
 
-@router.get("/config/email", response_model=EmailConfig)
-def get_email_config(db: Session = Depends(get_db)):
-    """获取邮件服务器配置"""
-    smtp_user = db.query(SystemConfig).filter(SystemConfig.key == "smtp_user").first()
-    smtp_pass = db.query(SystemConfig).filter(SystemConfig.key == "smtp_password").first()
-    smtp_host = db.query(SystemConfig).filter(SystemConfig.key == "smtp_host").first()
-    smtp_port = db.query(SystemConfig).filter(SystemConfig.key == "smtp_port").first()
-    
-    return EmailConfig(
-        smtp_user=smtp_user.value if smtp_user else "",
-        smtp_password=smtp_pass.value if smtp_pass else "",
-        smtp_server=smtp_host.value if smtp_host else "smtp.gmail.com",
-        smtp_port=int(smtp_port.value) if smtp_port else 465,
-        sender_email=smtp_user.value if smtp_user else ""
-    )
-
-
-@router.post("/config/email")
-def update_email_config(config: EmailConfig, db: Session = Depends(get_db)):
-    """更新邮件服务器配置"""
-    configs = {
-        "smtp_user": config.smtp_user,
-        "smtp_password": config.smtp_password,
-        "smtp_host": config.smtp_server,
-        "smtp_port": str(config.smtp_port)
-    }
-    
-    for key, value in configs.items():
-        item = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        if item:
-            item.value = value
-        else:
-            item = SystemConfig(key=key, value=value)
-            db.add(item)
-    
-    db.commit()
-    return {"status": "success", "message": "邮件配置已更新"}
-
-
 @router.get("/{visitor_id}/qrcode")
 def get_visitor_qrcode(visitor_id: int, db: Session = Depends(get_db)):
     """获取访客二维码"""
@@ -359,7 +508,7 @@ def get_visitor_qrcode(visitor_id: int, db: Session = Depends(get_db)):
     permission = db.query(VisitorPermission).filter(
         VisitorPermission.visitor_id == visitor_id,
         VisitorPermission.is_active == True,
-        VisitorPermission.expires_at > datetime.utcnow()
+        VisitorPermission.expires_at > now_utc8()
     ).first()
     
     if not permission:
@@ -381,7 +530,7 @@ def get_visitor_qrcode(visitor_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{visitor_id}/permissions", response_model=List[VisitorPermissionResponse])
-def get_visitor_permissions(visitor_id: int, db: Session = Depends(get_db)):
+def get_visitor_permissions(visitor_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """获取访客的所有权限"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
@@ -397,14 +546,15 @@ def get_visitor_permissions(visitor_id: int, db: Session = Depends(get_db)):
 def create_visitor_permission(
     visitor_id: int,
     perm_create: VisitorPermissionCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role("admin"))
 ):
     """为访客创建权限记录"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
     
-    expires_at = datetime.utcnow() + timedelta(hours=perm_create.expires_in_hours)
+    expires_at = now_utc8() + timedelta(hours=perm_create.expires_in_hours)
     token = f"VISITOR:{visitor_id}:{secrets.token_hex(16)}"
     
     permission = VisitorPermission(
@@ -429,7 +579,8 @@ def update_visitor_permission(
     permission_id: int,
     is_active: Optional[bool] = None,
     expires_at: Optional[datetime] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: TokenData = Depends(require_role("admin"))
 ):
     """更新访客权限"""
     permission = db.query(VisitorPermission).filter(
@@ -451,7 +602,7 @@ def update_visitor_permission(
 
 
 @router.delete("/{visitor_id}/permission/{permission_id}")
-def delete_visitor_permission(visitor_id: int, permission_id: int, db: Session = Depends(get_db)):
+def delete_visitor_permission(visitor_id: int, permission_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """删除访客权限"""
     permission = db.query(VisitorPermission).filter(
         VisitorPermission.id == permission_id,
@@ -477,7 +628,7 @@ def verify_qrcode(qrcode_token: str, device_id: str = None, db: Session = Depend
 
 
 @router.post("/{visitor_id}/send-qrcode")
-def send_qrcode_to_visitor(visitor_id: int, send_via: str, db: Session = Depends(get_db)):
+def send_qrcode_to_visitor(visitor_id: int, send_via: str, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """发送二维码到访客邮箱或手机（发送方式：email/sms）"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
@@ -487,7 +638,7 @@ def send_qrcode_to_visitor(visitor_id: int, send_via: str, db: Session = Depends
     permission = db.query(VisitorPermission).filter(
         VisitorPermission.visitor_id == visitor_id,
         VisitorPermission.is_active == True,
-        VisitorPermission.expires_at > datetime.utcnow()
+        VisitorPermission.expires_at > now_utc8()
     ).first()
     
     if not permission:
@@ -496,120 +647,20 @@ def send_qrcode_to_visitor(visitor_id: int, send_via: str, db: Session = Depends
     send_via = send_via.lower()
     
     if send_via == "email":
-        if not visitor.email:
-            raise HTTPException(status_code=400, detail="访客未设置邮箱")
-        
-        # 检查二维码文件是否存在，如果不存在则从DB恢复或重新生成
-        if not visitor.qr_code_path or not os.path.exists(visitor.qr_code_path):
-            if visitor.qr_code_image:
-                # 从DB恢复文件
-                qrcode_dir = "static/qrcodes"
-                os.makedirs(qrcode_dir, exist_ok=True)
-                filename = f"visitor_{visitor.id}_{uuid.uuid4().hex[:8]}.png"
-                qrcode_path = os.path.join(qrcode_dir, filename)
-                with open(qrcode_path, "wb") as f:
-                    f.write(visitor.qr_code_image)
-                visitor.qr_code_path = qrcode_path
-                db.commit()
-            else:
-                # 重新生成
-                qrcode_path = generate_qrcode(permission.qr_code_token)
-                visitor.qr_code_path = qrcode_path
-                db.commit()
-        
-        # 使用yagmail发送邮件
         try:
-            # 从数据库获取邮件配置
-            smtp_user_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_user").first()
-            smtp_pass_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_password").first()
-            smtp_host_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_host").first()
-            smtp_port_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_port").first()
-            
-            smtp_user = smtp_user_cfg.value if smtp_user_cfg else os.getenv("SMTP_USER")
-            smtp_password = smtp_pass_cfg.value if smtp_pass_cfg else os.getenv("SMTP_PASSWORD")
-            smtp_host = smtp_host_cfg.value if smtp_host_cfg else "smtp.gmail.com"
-            smtp_port = smtp_port_cfg.value if smtp_port_cfg else "465"
-            
-            if not smtp_user or not smtp_password:
-                raise HTTPException(status_code=400, detail="邮件服务器未配置，请先在设置中配置邮件服务")
-
-            # 初始化yagmail
-            yag = yagmail.SMTP(user=smtp_user, password=smtp_password, host=smtp_host, port=int(smtp_port))
-            
-            # 准备邮件内容
-            subject = f"SmartAccess 访客二维码 - {visitor.name}"
-            
-            # 邮件正文（HTML格式）
-            body = f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5;">
-                <div style="max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                    <h2 style="color: #667eea; text-align: center;">SmartAccess 访客通行证</h2>
-                    
-                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                        <h3 style="margin: 0 0 10px 0;">访客信息</h3>
-                        <p style="margin: 5px 0;"><strong>姓名：</strong>{visitor.name}</p>
-                        <p style="margin: 5px 0;"><strong>公司：</strong>{visitor.company or '未提供'}</p>
-                        <p style="margin: 5px 0;"><strong>访问目的：</strong>{visitor.purpose or '一般访问'}</p>
-                        <p style="margin: 5px 0;"><strong>有效期至：</strong>{permission.expires_at.strftime('%Y-%m-%d %H:%M')}</p>
-                        <p style="margin: 5px 0;"><strong>剩余次数：</strong>{permission.max_uses - permission.accessed_count if permission.max_uses > 0 else '无限制'}</p>
-                    </div>
-                    
-                    <div style="text-align: center; margin: 30px 0;">
-                        <p style="font-size: 16px; color: #333; margin-bottom: 15px;">
-                            ⬇️ 请使用下方二维码进行门禁验证 ⬇️
-                        </p>
-                        <p style="font-size: 14px; color: #666; margin-top: 10px;">
-                            到达门口后，请在摄像头或扫码设备前出示此二维码
-                        </p>
-                    </div>
-                    
-                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                        <h4 style="color: #333; margin-top: 0;">使用说明：</h4>
-                        <ol style="color: #666; line-height: 1.8;">
-                            <li>打开此邮件查看附件中的二维码图片</li>
-                            <li>保存二维码到手机相册（或直接使用邮件附件）</li>
-                            <li>到达门口时，将二维码对准摄像头</li>
-                            <li>等待验证通过后即可进入</li>
-                        </ol>
-                    </div>
-                    
-                    <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px;">
-                        <p style="margin: 0; color: #856404;"><strong>⚠️ 重要提示：</strong></p>
-                        <ul style="color: #856404; margin: 10px 0 0 0; padding-left: 20px;">
-                            <li>此二维码仅限本次访问使用</li>
-                            <li>请勿将二维码转发他人</li>
-                            <li>如有问题请联系前台</li>
-                        </ul>
-                    </div>
-                    
-                    <p style="text-align: center; color: #999; font-size: 12px; margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px;">
-                        此邮件由 SmartAccess 智能门禁系统自动发送<br/>
-                        © 2024 SmartAccess. All rights reserved.
-                    </p>
-                </div>
-            </body>
-            </html>
-            """
-            
-            # 发送邮件（附件为二维码图片）
-            yag.send(
-                to=visitor.email,
-                subject=subject,
-                contents=[body, visitor.qr_code_path]
+            return send_qrcode_email_internal(visitor, permission, db)
+        except HTTPException:
+            raise
+        except smtplib.SMTPAuthenticationError:
+            raise HTTPException(
+                status_code=400,
+                detail="SMTP认证失败：请检查邮箱账号、SMTP授权码，以及是否已开启SMTP服务"
             )
-            
-            # 更新发送状态
-            permission.email_sent = True
-            permission.email_sent_at = datetime.utcnow()
-            db.commit()
-            
-            return {
-                "status": "success",
-                "message": f"二维码已成功发送到邮箱 {visitor.email}",
-                "sent_to": visitor.email,
-                "qrcode_path": visitor.qr_code_path
-            }
+        except smtplib.SMTPServerDisconnected:
+            raise HTTPException(
+                status_code=502,
+                detail="SMTP连接被服务器断开：可能是授权码错误、账号异常、登录频率限制或服务器繁忙"
+            )
             
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"邮件发送失败: {str(e)}")
@@ -622,7 +673,7 @@ def send_qrcode_to_visitor(visitor_id: int, send_via: str, db: Session = Depends
         # 由于短信需要付费服务，这里仅做标记
         
         permission.sms_sent = True
-        permission.sms_sent_at = datetime.utcnow()
+        permission.sms_sent_at = now_utc8()
         db.commit()
         
         return {
@@ -636,26 +687,26 @@ def send_qrcode_to_visitor(visitor_id: int, send_via: str, db: Session = Depends
 
 
 @router.post("/{visitor_id}/checkin")
-def visitor_checkin(visitor_id: int, db: Session = Depends(get_db)):
+def visitor_checkin(visitor_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """访客入场记录"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
     
-    visitor.check_in_time = datetime.utcnow()
+    visitor.check_in_time = now_utc8()
     db.commit()
     
     return {"status": "success", "message": f"{visitor.name} 已入场"}
 
 
 @router.post("/{visitor_id}/checkout")
-def visitor_checkout(visitor_id: int, db: Session = Depends(get_db)):
+def visitor_checkout(visitor_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """访客离场记录"""
     visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
     
-    visitor.check_out_time = datetime.utcnow()
+    visitor.check_out_time = now_utc8()
     visitor.is_checked_out = True
     
     # 禁用所有权限
@@ -669,7 +720,7 @@ def visitor_checkout(visitor_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/batch")
-def batch_create_visitors(visitors_data: List[VisitorCreate], db: Session = Depends(get_db)):
+def batch_create_visitors(visitors_data: List[VisitorCreate], db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """批量创建访客记录"""
     import os
     expires_hours = int(os.getenv("VISITOR_QR_EXPIRES_HOURS", "24"))
@@ -677,7 +728,7 @@ def batch_create_visitors(visitors_data: List[VisitorCreate], db: Session = Depe
     created_visitors = []
     
     for visitor_data in visitors_data:
-        expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
+        expires_at = now_utc8() + timedelta(hours=expires_hours)
         
         db_visitor = Visitor(
             name=visitor_data.name,
@@ -717,6 +768,21 @@ def batch_create_visitors(visitors_data: List[VisitorCreate], db: Session = Depe
         created_visitors.append(db_visitor)
     
     db.commit()
+
+    # 批量创建后，对填写了邮箱的访客自动发送二维码邮件
+    for v in created_visitors:
+        if not v.email:
+            continue
+        permission = db.query(VisitorPermission).filter(
+            VisitorPermission.visitor_id == v.id,
+            VisitorPermission.is_active == True
+        ).order_by(VisitorPermission.created_at.desc()).first()
+        if not permission:
+            continue
+        try:
+            send_qrcode_email_internal(v, permission, db)
+        except Exception as e:
+            logger.error(f"批量创建后自动发送邮件失败 visitor_id={v.id}: {e}")
     
     return {
         "status": "success",
@@ -728,7 +794,7 @@ def batch_create_visitors(visitors_data: List[VisitorCreate], db: Session = Depe
 @router.get("/statistics/today")
 def get_today_statistics(db: Session = Depends(get_db)):
     """获取今日统计信息"""
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now_utc8().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     checked_in = db.query(Visitor).filter(
@@ -752,3 +818,67 @@ def get_today_statistics(db: Session = Depends(get_db)):
         "checked_out_today": checked_out,
         "currently_inside": currently_inside
     }
+
+
+# ==================== 测试邮件API ====================
+
+class TestEmailRequest(BaseModel):
+    email: str
+
+@router.post("/test-email")
+def test_email_send(request: TestEmailRequest, db: Session = Depends(get_db)):
+    """测试邮件发送功能"""
+    try:
+        # 从数据库获取邮件配置
+        smtp_user_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_user").first()
+        smtp_pass_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_password").first()
+        smtp_host_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_host").first()
+        smtp_port_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_port").first()
+
+        smtp_user = smtp_user_cfg.value if smtp_user_cfg else os.getenv("SMTP_USER")
+        smtp_password = smtp_pass_cfg.value if smtp_pass_cfg else os.getenv("SMTP_PASSWORD")
+        smtp_host = smtp_host_cfg.value if smtp_host_cfg else "smtp.gmail.com"
+        smtp_port = smtp_port_cfg.value if smtp_port_cfg else "587"
+
+        if not smtp_user or not smtp_password:
+            raise HTTPException(status_code=400, detail="邮件服务器未配置，请先运行 configure_smtp.py 配置邮件服务")
+
+        # 初始化yagmail
+        yag = yagmail.SMTP(user=smtp_user, password=smtp_password, host=smtp_host, port=int(smtp_port))
+
+        # 发送测试邮件
+        subject = "SmartAccess 邮件测试"
+        body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; padding: 20px;">
+            <h2>SmartAccess 邮件测试</h2>
+            <p>恭喜！您的邮件配置成功。</p>
+            <p>现在您可以使用访客二维码下发功能了。</p>
+            <p><strong>测试时间：</strong>{now_utc8().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">
+                此邮件由 SmartAccess 系统自动发送
+            </p>
+        </body>
+        </html>
+        """
+
+        yag.send(
+            to=request.email,
+            subject=subject,
+            contents=body
+        )
+
+        return {
+            "status": "success",
+            "message": f"测试邮件已发送到 {request.email}",
+            "smtp_config": {
+                "host": smtp_host,
+                "port": smtp_port,
+                "user": smtp_user
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"邮件发送失败: {str(e)}")
+

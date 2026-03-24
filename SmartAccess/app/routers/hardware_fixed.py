@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models import HardwareDevice, AccessLog, User, NFCCard, BluetoothBinding, UserPermission, NFCTask
 from app.utils import check_permission_valid
 from datetime import datetime, timedelta
+from app.time_utils import now_utc8
 from typing import List, Optional, Dict
 from pydantic import BaseModel
 from fastapi import Request
@@ -221,11 +222,11 @@ def device_heartbeat(device_id: str, connection_status: str = "online", db: Sess
     if not db_device:
         raise HTTPException(status_code=404, detail="设备不存在")
     
-    db_device.last_heartbeat = datetime.utcnow()
+    db_device.last_heartbeat = now_utc8()
     db_device.is_active = True
     db_device.connection_status = connection_status
     db.commit()
-    return {"status": "ok", "device_id": device_id, "timestamp": datetime.utcnow()}
+    return {"status": "ok", "device_id": device_id, "timestamp": now_utc8()}
 
 
 @router.delete("/devices/{device_id}")
@@ -262,7 +263,7 @@ def create_nfc_card(card: NFCCardCreate, db: Session = Depends(get_db)):
         user_id=card.user_id,
         card_number=card.card_number,
         card_name=card.card_name,
-        permission_start_date=datetime.utcnow(),
+        permission_start_date=now_utc8(),
         permission_end_date=card.permission_end_date,
         max_daily_uses=card.max_daily_uses,
     )
@@ -388,7 +389,7 @@ def nfc_access(card_number: str, device_id: str, db: Session = Depends(get_db)):
     
     # 更新使用统计
     card.daily_use_count += 1
-    card.last_use_date = datetime.utcnow()
+    card.last_use_date = now_utc8()
     
     db.commit()
     user = card.user
@@ -431,7 +432,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         if task and task.command == "ENROLL":
             task.status = "done"
             task.result = f'{{"card_uid":"{card_uid}"}}'
-            task.consumed_at = datetime.utcnow()
+            task.consumed_at = now_utc8()
             db.commit()
             return {"action": "ACCEPT", "msg": "卡片已识别，请等待后台注册"}
         
@@ -447,7 +448,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
             db.add(access_log)
             task.status = "done"
             task.result = f'{{"card_uid":"{card_uid}","status":"unknown"}}'
-            task.consumed_at = datetime.utcnow()
+            task.consumed_at = now_utc8()
         db.commit()
         return {"action": "DENY", "msg": "未知卡片"}
 
@@ -464,7 +465,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         if task:
             task.status = "done"
             task.result = f'{{"card_uid":"{card_uid}","status":"disabled"}}'
-            task.consumed_at = datetime.utcnow()
+            task.consumed_at = now_utc8()
         db.commit()
         return {"action": "DENY", "msg": "卡片已被禁用"}
 
@@ -480,7 +481,7 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
         if task:
             task.status = "done"
             task.result = f'{{"card_uid":"{card_uid}","status":"expired"}}'
-            task.consumed_at = datetime.utcnow()
+            task.consumed_at = now_utc8()
         db.commit()
         return {"action": "DENY", "msg": "卡片权限已过期"}
 
@@ -495,12 +496,12 @@ def nfc_scan(req: NFCScanRequest, request: Request, db: Session = Depends(get_db
     db.add(access_log)
 
     card.daily_use_count += 1
-    card.last_use_date = datetime.utcnow()
+    card.last_use_date = now_utc8()
 
     if task:
         task.status = "done"
         task.result = f'{{"card_uid":"{card_uid}","status":"success","user_id":{card.user_id}}}'
-        task.consumed_at = datetime.utcnow()
+        task.consumed_at = now_utc8()
 
     db.commit()
 
@@ -557,7 +558,7 @@ def poll_nfc_command(device_id: str, db: Session = Depends(get_db)):
         return {"has_command": False}
 
     task.status = "sent"
-    task.sent_at = datetime.utcnow()
+    task.sent_at = now_utc8()
     db.commit()
     return {
         "has_command": True,
@@ -603,7 +604,7 @@ def create_bluetooth_binding(binding: BluetoothBindingCreate, db: Session = Depe
         device_id=binding.device_id,
         device_name=binding.device_name,
         is_paired=binding.is_paired,
-        permission_start_date=datetime.utcnow(),
+        permission_start_date=now_utc8(),
         permission_end_date=binding.permission_end_date,
         max_daily_uses=binding.max_daily_uses,
     )
@@ -686,7 +687,7 @@ def verify_bluetooth_access(request: dict, db: Session = Depends(get_db)):
         }
     
     # 检查权限时效
-    now = datetime.utcnow()
+    now = now_utc8()
     if binding.permission_start_date and now < binding.permission_start_date:
         return {"allow": False, "message": "权限未生效"}
     
@@ -736,7 +737,7 @@ def log_bluetooth_access(request: dict, db: Session = Depends(get_db)):
         return {"message": "未找到绑定记录"}
     
     # 更新使用统计
-    now = datetime.utcnow()
+    now = now_utc8()
     if binding.last_use_date and binding.last_use_date.date() == now.date():
         binding.daily_use_count += 1
     else:
@@ -778,7 +779,7 @@ def bluetooth_unlock(user_id: int, device_id: str, db: Session = Depends(get_db)
     # TODO: 添加硬件开锁实现
     
     binding.daily_use_count += 1
-    binding.last_use_date = datetime.utcnow()
+    binding.last_use_date = now_utc8()
     
     access_log = AccessLog(
         user_id=user_id,
@@ -794,7 +795,7 @@ def bluetooth_unlock(user_id: int, device_id: str, db: Session = Depends(get_db)
         "status": "success",
         "message": "开锁成功",
         "device_id": device_id,
-        "timestamp": datetime.utcnow()
+        "timestamp": now_utc8()
     }
 
 
@@ -808,7 +809,7 @@ def enable_bluetooth_pairing(device_id: str, duration_seconds: int = 300, db: Se
         "status": "pairing_mode_enabled",
         "device_id": device_id,
         "duration": duration_seconds,
-        "expires_at": datetime.utcnow() + timedelta(seconds=duration_seconds)
+        "expires_at": now_utc8() + timedelta(seconds=duration_seconds)
     }
 
 
@@ -824,7 +825,7 @@ def report_bluetooth_scan(mac: str, rssi: int, device_id: str, name: str = None)
         "rssi": rssi,
         "device_id": device_id,  # 上报设备ID
         "timestamp": time.time(),
-        "last_seen": datetime.utcnow().isoformat()
+        "last_seen": now_utc8().isoformat()
     }
     
     return {"status": "ok", "cached_devices": len(bluetooth_scan_cache)}
@@ -869,7 +870,7 @@ def get_access_logs(
     query = db.query(AccessLog)
     
     # 按时间范围筛选
-    start_date = datetime.utcnow() - timedelta(days=days)
+    start_date = now_utc8() - timedelta(days=days)
     query = query.filter(AccessLog.timestamp >= start_date)
     
     if access_type:
@@ -888,7 +889,7 @@ def get_user_logs(user_id: int, limit: int = 50, days: int = 30, db: Session = D
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
     
-    start_date = datetime.utcnow() - timedelta(days=days)
+    start_date = now_utc8() - timedelta(days=days)
     logs = db.query(AccessLog).filter(
         AccessLog.user_id == user_id,
         AccessLog.timestamp >= start_date
@@ -905,7 +906,7 @@ def get_device_logs(device_id: str, limit: int = 50, days: int = 30, db: Session
     if not device:
         raise HTTPException(status_code=404, detail="设备不存在")
     
-    start_date = datetime.utcnow() - timedelta(days=days)
+    start_date = now_utc8() - timedelta(days=days)
     logs = db.query(AccessLog).filter(
         AccessLog.device_id == device_id,
         AccessLog.timestamp >= start_date
@@ -919,7 +920,7 @@ def get_access_statistics(
     db: Session = Depends(get_db)
 ):
     """获取访问统计信息"""
-    start_date = datetime.utcnow() - timedelta(days=days)
+    start_date = now_utc8() - timedelta(days=days)
     
     total_accesses = db.query(AccessLog).filter(AccessLog.timestamp >= start_date).count()
     success_accesses = db.query(AccessLog).filter(
@@ -944,7 +945,7 @@ def get_access_statistics(
     return {
         "period_days": days,
         "start_date": start_date,
-        "end_date": datetime.utcnow(),
+        "end_date": now_utc8(),
         "total_accesses": total_accesses,
         "success_accesses": success_accesses,
         "failed_accesses": failed_accesses,
@@ -952,3 +953,4 @@ def get_access_statistics(
         "success_rate": f"{(success_accesses / total_accesses * 100) if total_accesses > 0 else 0:.2f}%",
         "access_by_type": {item[0]: item[1] for item in access_types}
     }
+

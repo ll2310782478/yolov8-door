@@ -290,6 +290,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="/web/settings" class="nav-link" data-tooltip="系统设置">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="/docs" class="nav-link" data-tooltip="API文档" target="_blank">
             <span class="icon">📖</span>
             <span class="label">API文档</span>
@@ -304,7 +310,7 @@
       <h1>NFC管理</h1>
       <div class="user-actions">
         <span id="welcome"></span>
-        <button class="btn btn-ghost" onclick="loadNFCCards()">🔄 刷新</button>
+        <button class="btn btn-ghost" onclick="fetchCards()">🔄 刷新</button>
         <button class="btn btn-primary" onclick="logout()">退出登录</button>
       </div>
     </div>
@@ -436,5 +442,30 @@
 
   
   <script src="/static/js/common.js"></script>
+  <script>
+    // 设置欢迎文本
+    {
+      const username = localStorage.getItem('username');
+      const welcomeEl = document.getElementById('welcome');
+      if (welcomeEl) welcomeEl.textContent = username ? `你好，${username}` : '已登录';
+    }
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/web/auth';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('未授权');
+      } catch (err) {
+        localStorage.removeItem('token');
+        window.location.href = '/web/auth';
+      }
+    });
+  </script>
   </body>
 </html>

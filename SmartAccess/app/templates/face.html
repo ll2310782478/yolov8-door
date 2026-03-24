@@ -173,6 +173,25 @@
   </head>
 <body>
   <script src="/static/js/common.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/web/auth';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('未授权');
+      } catch (err) {
+        localStorage.removeItem('token');
+        window.location.href = '/web/auth';
+      }
+    });
+  </script>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="icon">🔐</span>
@@ -239,6 +258,12 @@
           <a href="/web/logs" class="nav-link" data-tooltip="访问日志">
             <span class="icon">📜</span>
             <span class="label">访问日志</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="/web/settings" class="nav-link" data-tooltip="系统设置">
+            <span class="icon">⚙️</span>
+            <span class="label">系统设置</span>
           </a>
         </li>
         <li class="nav-item">
@@ -348,8 +373,8 @@
 
     <script>
 
-    const token = localStorage.getItem('smartaccess_token');
-        const username = localStorage.getItem('smartaccess_username');
+    const token = localStorage.getItem('token');
+        const username = localStorage.getItem('username');
         if (!token) { window.location.href = '/web/auth'; }
         else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
         const userSelect = document.getElementById('userSelect');
@@ -554,12 +579,34 @@
                 const th = parseFloat(thresholdInput.value || '0.7');
                 const matched = data.find(r => r.status === 'recognized' && r.similarity >= th);
                 if (matched) {
-                    setStatus(`识别成功：${matched.name} 相似度 ${matched.similarity.toFixed(2)}`, true);
-                    const uid = userMap[matched.name];
-                    if (uid) await openDoor(uid, matched.name);
-                    else setStatus('识别成功但未找到匹配用户ID', false, true);
+                    const isQR = matched.source === 'qrcode';
+                    const label = isQR ? `访客二维码识别成功：${matched.name}` : `识别成功：${matched.name} 相似度 ${(matched.similarity*100).toFixed(1)}%`;
+                    setStatus(label, true);
+                    if (isQR) {
+                        // 访客 QR 码：直接用 null user_id 开门，reason 中携带访客信息
+                        await openDoor(null, `qrcode:${matched.name}`);
+                    } else {
+                        const uid = userMap[matched.name];
+                        if (uid) await openDoor(uid, matched.name);
+                        else setStatus('识别成功但未找到匹配用户ID', false, true);
+                    }
                 } else {
-                    setStatus('未识别到已注册人脸', false, true);
+                    // 根据不同原因给出具体提示
+                    const noFace = data.find(r => r.status === 'no_face');
+                    const noReg = data.find(r => r.status === 'no_registered');
+                    const noFeat = data.find(r => r.status === 'no_features');
+                    const best = data.filter(r => r.status === 'unknown').sort((a,b) => b.similarity - a.similarity)[0];
+                    if (noReg) {
+                        setStatus('系统中暂无已注册的人脸数据，请先录入人脸', false, true);
+                    } else if (noFace) {
+                        setStatus('未检测到人脸，请正对摄像头并确保光线充足', false, true);
+                    } else if (noFeat) {
+                        setStatus('检测到人脸但无法提取特征，请调整角度或光线后重试', false, true);
+                    } else if (best) {
+                        setStatus(`识别失败：最高相似度 ${(best.similarity*100).toFixed(1)}%（阈值 ${(th*100).toFixed(0)}%），最接近 ${best.name !== 'Unknown' ? best.name : '无匹配'}`, false, true);
+                    } else {
+                        setStatus('未识别到已注册人脸', false, true);
+                    }
                 }
             } catch (e) {
                 setStatus(e.message, false, true);
@@ -571,15 +618,24 @@
                 resultsBox.innerHTML = '<div class="muted">暂无结果</div>';
                 return;
             }
+            const STATUS_MAP = {
+                recognized: ['✅ 已识别', 'ok'],
+                unknown: ['❌ 未匹配', 'fail'],
+                no_features: ['⚠️ 特征提取失败', 'fail'],
+                no_face: ['📷 未检测到人脸', 'fail'],
+                no_registered: ['📋 无注册数据', 'fail']
+            };
             list.forEach(item => {
+                const [label, cls] = STATUS_MAP[item.status] || [item.status, 'fail'];
+                const simPct = (item.similarity * 100).toFixed(1);
                 const div = document.createElement('div');
                 div.className = 'result-item';
                 div.innerHTML = `
                     <div>
                         <div><strong>${item.name || '未知'}</strong></div>
-                        <div class="muted">相似度: ${(item.similarity*100).toFixed(1)}% | 状态: ${item.status}</div>
+                        <div class="muted">${item.status === 'no_face' || item.status === 'no_registered' ? label : `相似度: ${simPct}% | ${label}`}</div>
                     </div>
-                    <span class="badge ${item.status==='recognized' ? 'ok' : 'fail'}">${item.status}</span>
+                    <span class="badge ${cls}">${label}</span>
                 `;
                 resultsBox.appendChild(div);
             });

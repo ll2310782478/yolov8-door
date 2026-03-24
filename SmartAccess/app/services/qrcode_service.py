@@ -1,6 +1,17 @@
+import time
+import logging
 from sqlalchemy.orm import Session
 from app.models import Visitor, VisitorPermission, AccessLog
 from datetime import datetime
+from app.time_utils import now_utc8
+
+logger = logging.getLogger(__name__)
+
+# 验证结果缓存：同一 token 在短时间内反复扫描时跳过数据库查询
+# 结构: {token: {"result": (...), "time": float}}
+_verify_cache: dict = {}
+_CACHE_TTL = 10  # 秒，同一 token 10 秒内复用结果
+
 
 def verify_qrcode_token(qrcode_token: str, db: Session, device_id: str = None):
     """
@@ -15,7 +26,14 @@ def verify_qrcode_token(qrcode_token: str, db: Session, device_id: str = None):
         parts = qrcode_token.split(":")
         if len(parts) < 2:
              return False, {"status": "invalid", "message": "无效的二维码格式"}
-             
+
+        # 短时间缓存：同一 token 连续扫描时直接返回上次结果
+        now = time.time()
+        cached = _verify_cache.get(qrcode_token)
+        if cached and (now - cached["time"]) < _CACHE_TTL:
+            logger.debug(f"QR 缓存命中: {qrcode_token[:20]}...")
+            return cached["result"]
+
         visitor_id = int(parts[1])
         
         permission = db.query(VisitorPermission).filter(
@@ -34,7 +52,7 @@ def verify_qrcode_token(qrcode_token: str, db: Session, device_id: str = None):
             return False, {"status": "inactive", "message": "权限已被禁用"}
         
         # 检查生效时间
-        now = datetime.utcnow()
+        now = now_utc8()
         if permission.start_time and now < permission.start_time:
             return False, {"status": "not_started", "message": "二维码尚未生效"}
 
@@ -65,7 +83,7 @@ def verify_qrcode_token(qrcode_token: str, db: Session, device_id: str = None):
         db.add(access_log)
         db.commit()
         
-        return True, {
+        result = (True, {
             "status": "valid",
             "visitor_id": visitor.id,
             "visitor_name": visitor.name,
@@ -73,7 +91,20 @@ def verify_qrcode_token(qrcode_token: str, db: Session, device_id: str = None):
             "purpose": visitor.purpose,
             "access_count": permission.accessed_count,
             "access_level": permission.access_level or "door1"
-        }
+        })
+
+        # 写入缓存
+        _verify_cache[qrcode_token] = {"result": result, "time": time.time()}
+
+        # 清理过期缓存条目（防止内存泄漩）
+        if len(_verify_cache) > 200:
+            cutoff = time.time() - _CACHE_TTL
+            expired = [k for k, v in _verify_cache.items() if v["time"] < cutoff]
+            for k in expired:
+                del _verify_cache[k]
+
+        return result
     
     except Exception as e:
         return False, {"status": "error", "message": str(e)}
+

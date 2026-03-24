@@ -1,6 +1,6 @@
 """认证路由 - 管理员登录"""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from typing import Optional
@@ -9,10 +9,10 @@ from pydantic import BaseModel, EmailStr
 from app.database import get_db
 from app.models import User
 from app.auth import (
-    LoginRequest, LoginResponse, Token,
+    LoginRequest, LoginResponse, Token, TokenData,
     verify_password, create_access_token,
     decode_token, ACCESS_TOKEN_EXPIRE_MINUTES,
-    get_password_hash
+    get_password_hash, get_current_user, require_role
 )
 
 router = APIRouter(
@@ -80,7 +80,7 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
     # 创建访问令牌
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.username, "user_id": user.id},
+        data={"sub": user.username, "user_id": user.id, "role": user.user_role},
         expires_delta=access_token_expires
     )
     
@@ -96,12 +96,15 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/register", response_model=RegisterResponse)
-async def register(request: RegisterRequest, db: Session = Depends(get_db)):
+async def register(
+    request: RegisterRequest,
+    db: Session = Depends(get_db),
+):
     """
-    用户注册端点
+    用户注册端点（公开）
 
     通过用户名/密码注册账户，可选填写邮箱、电话和姓名。
-    默认注册为可用状态，密码使用 bcrypt 存储。
+    注册后账户默认为待审核状态（is_active=False），需管理员审核激活并分配角色。
     """
     # 用户名重复检查
     existing_user = db.query(User).filter(User.username == request.username).first()
@@ -126,6 +129,8 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
         email=request.email,
         phone=request.phone,
         full_name=request.full_name,
+        is_active=False,
+        user_role="access_user",
     )
     db.add(db_user)
     db.commit()
@@ -133,7 +138,7 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
 
     return RegisterResponse(
         code=200,
-        message="注册成功",
+        message="注册成功，请等待管理员审核激活",
         data={"user_id": db_user.id, "username": db_user.username}
     )
 
@@ -152,14 +157,19 @@ async def logout():
 
 
 @router.get("/me")
-async def get_current_user(token: str = None, db: Session = Depends(get_db)):
+async def get_me(request: Request, db: Session = Depends(get_db)):
     """
     获取当前登录用户信息
     
     需要在请求头中提供令牌：Authorization: Bearer <token>
     """
+    # 从 Authorization header 提取 Bearer token
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    
     if not token:
-        # 尝试从请求头获取
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="缺少认证令牌",
@@ -191,6 +201,7 @@ async def get_current_user(token: str = None, db: Session = Depends(get_db)):
             "phone": user.phone,
             "full_name": user.full_name,
             "is_active": user.is_active,
+            "role": user.user_role,
             "created_at": user.created_at.isoformat() if user.created_at else None
         }
     }

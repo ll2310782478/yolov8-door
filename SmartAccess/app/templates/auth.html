@@ -104,8 +104,8 @@
         <div class="hero">
             <div>
                 <small>SmartAccess 门禁系统</small>
-                <h1>登录或注册后，进入可视化管理界面</h1>
-                <p>支持用户管理、访客二维码、硬件集成等功能。仍然保留原有 API 接口，方便自动化或二次开发。</p>
+                <h1>登录后，进入可视化管理界面</h1>
+                <p>系统用户由管理员统一管理。管理员拥有全部功能权限，门禁用户可绑定人脸/NFC/蓝牙进行开门，访客通过二维码通行。</p>
             </div>
             <div class="links">
                 <a class="link-btn" href="/docs">查看 API</a>
@@ -131,7 +131,7 @@
                     <input id="login-password" name="password" type="password" autocomplete="current-password" required>
                 </div>
                 <button type="submit">登录</button>
-                <div class="muted">登录成功后将跳转到控制台，可通过按钮进入用户/访客管理界面。</div>
+                <div class="muted">登录成功后将跳转到控制台管理界面。</div>
             </form>
 
             <form id="register-form" style="display:none;">
@@ -155,8 +155,8 @@
                     <label for="reg-fullname">姓名（可选）</label>
                     <input id="reg-fullname" name="full_name">
                 </div>
-                <button type="submit">注册并登录</button>
-                <div class="muted">注册后会自动登录并跳转到控制台。</div>
+                <button type="submit">注册</button>
+                <div class="muted">注册后需等待管理员审核激活账户，审核通过后即可登录。</div>
             </form>
         </div>
     </div>
@@ -185,8 +185,8 @@
         }
 
         function saveToken(token, username) {
-            localStorage.setItem('smartaccess_token', token);
-            localStorage.setItem('smartaccess_username', username || '');
+            localStorage.setItem('token', token);
+            localStorage.setItem('username', username || '');
         }
 
         function redirectDashboard() {
@@ -209,7 +209,16 @@
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || '登录失败');
-                saveToken(data.data.access_token, payload.username);
+                const token = data.data.access_token;
+                saveToken(token, payload.username);
+                // 获取用户角色并存储
+                const meRes = await fetch('/api/auth/me', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const meData = await meRes.json();
+                if (meRes.ok && meData.data) {
+                    localStorage.setItem('role', meData.data.role || 'access_user');
+                }
                 showMessage('登录成功，正在跳转...', 'success');
                 setTimeout(redirectDashboard, 800);
             } catch (err) {
@@ -236,24 +245,17 @@
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || '注册失败');
-                showMessage('注册成功，自动登录...', 'success');
-                // 自动登录
-                const loginRes = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: payload.username, password: payload.password })
-                });
-                const loginData = await loginRes.json();
-                if (!loginRes.ok) throw new Error(loginData.detail || loginData.message || '登录失败');
-                saveToken(loginData.data.access_token, payload.username);
-                setTimeout(redirectDashboard, 600);
+                showMessage(data.message || '注册成功，请等待管理员审核激活账户', 'success');
+                document.getElementById('register-form').reset();
+                // 3秒后切回登录页
+                setTimeout(() => switchTab('login'), 3000);
             } catch (err) {
                 showMessage(err.message, 'error');
             }
         });
 
         // 若已登录直接跳转
-        const existingToken = localStorage.getItem('smartaccess_token');
+        const existingToken = localStorage.getItem('token');
         if (existingToken) {
             redirectDashboard();
         }

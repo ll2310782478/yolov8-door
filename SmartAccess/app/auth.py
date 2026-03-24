@@ -1,10 +1,12 @@
 """认证配置和工具"""
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
+from fastapi import Depends, HTTPException, status, Request
+from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
 
@@ -19,7 +21,7 @@ pwd_context = CryptContext(
 )
 
 # JWT 配置
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-change-in-production-2024")
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-change-in-production-2026")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
@@ -35,6 +37,7 @@ class TokenData(BaseModel):
     """令牌数据模型"""
     username: Optional[str] = None
     user_id: Optional[int] = None
+    role: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -85,10 +88,47 @@ def decode_token(token: str) -> Optional[TokenData]:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         user_id: int = payload.get("user_id")
+        role: str = payload.get("role")
         
         if username is None:
             return None
         
-        return TokenData(username=username, user_id=user_id)
+        return TokenData(username=username, user_id=user_id, role=role)
     except JWTError:
         return None
+
+
+def get_current_user(request: Request):
+    """从请求头中提取当前用户信息（FastAPI 依赖）"""
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少认证令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_data = decode_token(token)
+    if token_data is None or token_data.username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token_data
+
+
+def require_role(*allowed_roles: str):
+    """角色权限校验依赖工厂，用法: Depends(require_role("admin"))"""
+    def checker(current_user: TokenData = Depends(get_current_user)):
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="权限不足，需要角色: " + ", ".join(allowed_roles),
+            )
+        return current_user
+    return checker
