@@ -290,7 +290,18 @@
     // 加载设备列表
     async function loadDevices() {
         try {
-            const response = await fetch('/api/hardware/devices');
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('deviceGrid').style.display = 'none';
+        document.getElementById('noDevices').style.display = 'none';
+        const response = await fetch('/api/hardware/devices', { headers: authHeaders() });
+        if (response.status === 401) {
+          localStorage.removeItem('token');
+          localStorage.removeItem('access_token');
+          sessionStorage.removeItem('token');
+          sessionStorage.removeItem('access_token');
+          window.location.href = '/web/auth';
+          return;
+        }
             const data = await response.json();
             
             if (!Array.isArray(data)) {
@@ -331,25 +342,30 @@
             document.getElementById('loading').innerHTML = '❌ 加载失败，请刷新重试';
         }
     }
-    // UTC -> 本地（东八区）解析
-    function parseUtcPlus8(dateStr) {
+        // 统一时间解析：后端无时区字段按 UTC+8 处理，避免时间显示偏移
+        function parseServerTime(dateStr) {
         if (!dateStr) return null;
-        const utc = new Date(dateStr.endsWith('Z') ? dateStr : `${dateStr}Z`);
-        if (isNaN(utc.getTime())) return null;
-        const display = new Date(utc.getTime() + 8 * 3600 * 1000);
-        return { utc, display };
+          let normalized = String(dateStr).trim().replace(' ', 'T');
+          const hasTimezone = /Z$|[+-]\d{2}:?\d{2}$/.test(normalized);
+          if (!hasTimezone) normalized += '+08:00';
+          const parsed = new Date(normalized);
+          if (isNaN(parsed.getTime())) return null;
+          return parsed;
     }
     // 创建设备卡片
     function createDeviceCard(device) {
         const card = document.createElement('div');
         card.className = 'device-card';
-        const parsed = parseUtcPlus8(device.last_heartbeat);
-        const heartbeatAgeSec = parsed ? Math.floor((Date.now() - parsed.utc.getTime()) / 1000) : null;
+          const parsed = parseServerTime(device.last_heartbeat);
+          const rawAge = parsed ? Math.floor((Date.now() - parsed.getTime()) / 1000) : null;
+          const heartbeatAgeSec = rawAge !== null && rawAge >= 0 ? rawAge : null;
         const isOnline = device.connection_status === 'online' && heartbeatAgeSec !== null && heartbeatAgeSec < 90;
-        const lastHeartbeat = parsed ? `${parsed.display.toLocaleString('zh-CN')} (${heartbeatAgeSec}s前)` : '从未';
+          const lastHeartbeat = parsed
+            ? `${parsed.toLocaleString('zh-CN')}${heartbeatAgeSec !== null ? ` (${heartbeatAgeSec}s前)` : ''}`
+            : '从未';
         card.innerHTML = `
             <div class="device-header">
-                <div class="device-name">${device.device_name}</div>
+              <div class="device-name">${device.device_name || device.device_id}</div>
                 <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
                     ${isOnline ? '● 在线' : '○ 离线'}${device.connection_status ? ' | ' + device.connection_status : ''}
                 </span>
@@ -391,20 +407,20 @@
         try {
             const response = await fetch('/api/hardware/remote-door/open', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+              headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     device_id: deviceId,
                     door_id: doorId,
                     source: 'remote'
                 })
             });
-            const data = await response.json();
+                let data = null;
+                try { data = await response.json(); } catch (_) { data = null; }
             if (response.ok && data.success) {
                 showToast(`✅ ${data.message}`, 'success');
             } else {
-                showToast(`❌ ${data.detail || '开门失败'}`, 'error');
+                  const msg = data?.detail || data?.error?.message || data?.message || '开门失败';
+                  showToast(`❌ ${msg}`, 'error');
             }
         } catch (error) {
             console.error('开门请求失败:', error);
@@ -421,9 +437,6 @@
             toast.remove();
         }, 3000);
     }
-    // 页面加载时获取设备列表
-    loadDevices();
-    
     // 每10秒自动刷新设备状态（提高响应速度）
     setInterval(loadDevices, 10000);
     
@@ -446,7 +459,7 @@
   <script src="/static/js/common.js"></script>
   <script>
     window.addEventListener('DOMContentLoaded', async () => {
-      const token = localStorage.getItem('token');
+      const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
       if (!token) {
         window.location.href = '/web/auth';
         return;
@@ -457,8 +470,12 @@
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (!res.ok) throw new Error('未授权');
+        loadDevices();
       } catch (err) {
         localStorage.removeItem('token');
+        localStorage.removeItem('access_token');
+        sessionStorage.removeItem('token');
+        sessionStorage.removeItem('access_token');
         window.location.href = '/web/auth';
       }
     });

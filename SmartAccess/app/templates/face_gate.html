@@ -217,6 +217,7 @@
   </style>
 </head>
 <body>
+    <script src="/static/js/common.js"></script>
     <div class="video-container">
         <video id="video" autoplay playsinline muted></video>
         <canvas id="canvas"></canvas>
@@ -272,7 +273,7 @@
     </div>
 
     <script>
-        const token = localStorage.getItem('token');
+        const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
         // 门禁终端不需要登录即可使用 (Kiosk Mode)
         // if (!token) window.location.href = '/web/auth';
         
@@ -358,7 +359,7 @@
 
         async function loadUsers() {
             try {
-                const res = await fetch('/api/users/', { headers: {'Authorization': `Bearer ${token}`} });
+                const res = await fetch('/api/users/', { headers: authHeaders() });
                 const data = await res.json();
                 data.forEach(u => userMap[u.username] = u.id);
             } catch(e) { console.error(e); }
@@ -366,7 +367,7 @@
 
         async function loadDevices() {
             try {
-                const res = await fetch('/api/hardware/devices', { headers: {'Authorization': `Bearer ${token}`} });
+                const res = await fetch('/api/hardware/devices', { headers: authHeaders() });
                 const data = await res.json();
                 const sel = document.getElementById('deviceSelect');
                 sel.innerHTML = '<option value="">-- 请选择此终端控制的门 --</option>';
@@ -415,7 +416,7 @@
                 
                 const res = await fetch('/api/face-recognition/recognize', {
                     method: 'POST',
-                    headers: {'Authorization': `Bearer ${token}`},
+                    headers: authHeaders(),
                     body: fd
                 });
                 
@@ -508,10 +509,7 @@
 
                     await fetch('/api/hardware/remote-unlock', {
                         method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                        },
+                        headers: authHeaders({ 'Content-Type': 'application/json' }),
                         body: JSON.stringify(payload)
                     });
                 } catch(e) { console.error('Unlock failed', e); }

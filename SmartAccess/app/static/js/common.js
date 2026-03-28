@@ -6,13 +6,41 @@
  * @returns {object} 包含 Authorization 的 headers 对象
  */
 function authHeaders(extra = {}) {
-    const token = localStorage.getItem('token');
+    const token = getStoredToken();
     const headers = {};
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;
     }
     return { ...headers, ...extra };
 }
+
+/**
+ * 统一读取认证令牌，兼容历史键名与 sessionStorage
+ * @returns {string|null}
+ */
+function getStoredToken() {
+    const candidates = [
+        localStorage.getItem('access_token'),
+        localStorage.getItem('token'),
+        sessionStorage.getItem('access_token'),
+        sessionStorage.getItem('token')
+    ];
+    for (const raw of candidates) {
+        if (!raw) continue;
+        const token = String(raw).trim();
+        if (!token || token === 'null' || token === 'undefined') continue;
+        return token;
+    }
+    return null;
+}
+
+// 同步历史键名，避免页面旧逻辑只读取 token 键时出现伪未登录
+(function syncLegacyTokenKeys() {
+    const token = getStoredToken();
+    if (!token) return;
+    localStorage.setItem('token', token);
+    localStorage.setItem('access_token', token);
+})();
 
 /**
  * 切换侧边栏展开/折叠状态
@@ -34,8 +62,11 @@ function logout() {
     if (confirm('确定要退出登录吗？')) {
         // 清除本地存储的Token
         localStorage.removeItem('token');
+        localStorage.removeItem('access_token');
         localStorage.removeItem('username');
         localStorage.removeItem('role');
+        sessionStorage.removeItem('token');
+        sessionStorage.removeItem('access_token');
         // 跳转到登录页
         window.location.href = '/web/auth';
     }

@@ -186,6 +186,9 @@
 
         function saveToken(token, username) {
             localStorage.setItem('token', token);
+            localStorage.setItem('access_token', token);
+            sessionStorage.setItem('token', token);
+            sessionStorage.setItem('access_token', token);
             localStorage.setItem('username', username || '');
         }
 
@@ -254,11 +257,22 @@
             }
         });
 
-        // 若已登录直接跳转
-        const existingToken = localStorage.getItem('token');
-        if (existingToken) {
-            redirectDashboard();
-        }
+        // 若存在本地令牌，先校验有效性再跳转，避免“伪登录”导致页面报缺少令牌
+        (async () => {
+            const existingToken = localStorage.getItem('token') || localStorage.getItem('access_token') || sessionStorage.getItem('token') || sessionStorage.getItem('access_token');
+            if (!existingToken) return;
+            try {
+                const res = await fetch('/api/auth/me', {
+                    headers: { 'Authorization': `Bearer ${existingToken}` }
+                });
+                if (res.ok) {
+                    localStorage.setItem('token', existingToken);
+                    redirectDashboard();
+                }
+            } catch (_) {
+                // 忽略校验异常，停留在登录页
+            }
+        })();
     </script>
 </body>
 </html>

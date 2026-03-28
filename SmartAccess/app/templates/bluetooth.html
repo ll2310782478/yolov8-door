@@ -328,6 +328,13 @@
           <label for="deviceName">设备名称</label>
           <input type="text" id="deviceName" placeholder="例如: 我的手机">
         </div>
+
+        <div class="form-group">
+          <label for="controllerDeviceId">授权硬件设备</label>
+          <select id="controllerDeviceId">
+            <option value="">全部设备（不限制）</option>
+          </select>
+        </div>
         
         <div class="form-group">
           <label for="permissionEndDate">权限到期时间</label>
@@ -363,7 +370,7 @@
     }
     // 认证守卫
     window.addEventListener('DOMContentLoaded', async () => {
-      const token = localStorage.getItem('token');
+      const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
       if (!token) {
         window.location.href = '/web/auth';
         return;
@@ -376,14 +383,36 @@
         if (!res.ok) throw new Error('未授权');
       } catch (err) {
         localStorage.removeItem('token');
+        localStorage.removeItem('access_token');
+        sessionStorage.removeItem('token');
+        sessionStorage.removeItem('access_token');
         window.location.href = '/web/auth';
       }
     });
+
+    async function apiFetch(url, options = {}) {
+      const opts = { ...options };
+      opts.headers = authHeaders(options.headers || {});
+      const response = await fetch(url, opts);
+      if (response.status === 401) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('access_token');
+        sessionStorage.removeItem('token');
+        sessionStorage.removeItem('access_token');
+        window.location.href = '/web/auth';
+        throw new Error('登录已过期，请重新登录');
+      }
+      return response;
+    }
     
     // 加载蓝牙绑定列表
     async function loadBindings() {
       try {
-        const response = await fetch('/api/hardware/bluetooth/bindings');
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('bindingGrid').style.display = 'none';
+        document.getElementById('noBindings').style.display = 'none';
+
+        const response = await apiFetch('/api/hardware/bluetooth/bindings');
         const bindings = await response.json();
         
         document.getElementById('loading').style.display = 'none';
@@ -416,6 +445,7 @@
       const lastUse = binding.last_use_date 
         ? new Date(binding.last_use_date).toLocaleString('zh-CN')
         : '从未';
+      const boundController = binding.controller_device_id || '全部设备';
       
       card.innerHTML = `
         <div class="binding-header">
@@ -434,6 +464,9 @@
         </div>
         <div class="binding-info">
           <strong>绑定用户:</strong> <span id="user-${binding.user_id}">用户ID ${binding.user_id}</span>
+        </div>
+        <div class="binding-info">
+          <strong>授权设备:</strong> ${boundController}
         </div>
         <div class="binding-info">
           <strong>每日限制:</strong> ${binding.max_daily_uses > 0 ? binding.max_daily_uses + '次' : '无限制'}
@@ -478,7 +511,7 @@
       }
       
       try {
-        const response = await fetch(`/api/hardware/bluetooth/binding/${bindingId}`, {
+        const response = await apiFetch(`/api/hardware/bluetooth/binding/${bindingId}`, {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({device_name: newName})
@@ -499,7 +532,7 @@
     // 获取用户名
     async function fetchUserName(userId) {
       try {
-        const response = await fetch(`/api/users/${userId}`);
+        const response = await apiFetch(`/api/users/${userId}`);
         if (response.ok) {
           const user = await response.json();
           const elem = document.getElementById(`user-${userId}`);
@@ -515,7 +548,7 @@
     // 检查设备冷却期状态
     async function checkCooldownStatus(bindingId, deviceMac) {
       try {
-        const response = await fetch('/api/hardware/bluetooth/verify', {
+        const response = await apiFetch('/api/hardware/bluetooth/verify', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -592,7 +625,7 @@
       document.getElementById('bindingId').value = '';
       
       // 加载用户列表
-      await loadUsers();
+      await Promise.all([loadUsers(), loadControllerDevices()]);
       
       document.getElementById('bindingModal').classList.add('show');
     }
@@ -600,7 +633,7 @@
     // 加载用户列表
     async function loadUsers() {
       try {
-        const response = await fetch('/api/users');
+        const response = await apiFetch('/api/users/');
         const users = await response.json();
         
         const select = document.getElementById('userId');
@@ -617,6 +650,32 @@
       }
     }
 
+    // 加载可授权的硬件设备
+    async function loadControllerDevices(selectedId = '') {
+      const select = document.getElementById('controllerDeviceId');
+      if (!select) return;
+
+      try {
+        const response = await apiFetch('/api/hardware/devices');
+        const devices = response.ok ? await response.json() : [];
+        const activeDevices = (devices || []).filter(device => device.is_active);
+
+        select.innerHTML = '<option value="">全部设备（不限制）</option>';
+        activeDevices.forEach(device => {
+          const option = document.createElement('option');
+          option.value = device.device_id;
+          option.textContent = `${device.device_name || device.device_id} (${device.device_id})`;
+          select.appendChild(option);
+        });
+
+        if (selectedId) {
+          select.value = selectedId;
+        }
+      } catch (error) {
+        console.error('加载硬件设备失败:', error);
+      }
+    }
+
     // 关闭模态框
     function closeModal() {
       document.getElementById('bindingModal').classList.remove('show');
@@ -630,6 +689,7 @@
       const data = {
         user_id: parseInt(document.getElementById('userId').value),
         device_id: document.getElementById('deviceId').value.trim().toUpperCase(),
+        controller_device_id: document.getElementById('controllerDeviceId').value,
         device_name: document.getElementById('deviceName').value.trim() || null,
         permission_end_date: document.getElementById('permissionEndDate').value || null,
         max_daily_uses: parseInt(document.getElementById('maxDailyUses').value) || 0,
@@ -642,7 +702,7 @@
           : '/api/hardware/bluetooth/bindings';
         const method = bindingId ? 'PUT' : 'POST';
         
-        const response = await fetch(url, {
+        const response = await apiFetch(url, {
           method: method,
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(data)
@@ -665,7 +725,7 @@
     // 编辑绑定
     async function editBinding(id) {
       try {
-        const response = await fetch(`/api/hardware/bluetooth/bindings`);
+        const response = await apiFetch(`/api/hardware/bluetooth/bindings`);
         const bindings = await response.json();
         const binding = bindings.find(b => b.id === id);
         
@@ -676,7 +736,12 @@
         
         document.getElementById('modalTitle').textContent = '编辑蓝牙设备绑定';
         document.getElementById('bindingId').value = binding.id;
-        document.getElementById('userId').value = binding.user_id;
+        await Promise.all([
+          loadUsers(),
+          loadControllerDevices(binding.controller_device_id || '')
+        ]);
+
+        document.getElementById('userId').value = String(binding.user_id);
         document.getElementById('deviceId').value = binding.device_id;
         document.getElementById('deviceName').value = binding.device_name || '';
         document.getElementById('maxDailyUses').value = binding.max_daily_uses || 0;
@@ -688,7 +753,6 @@
             date.toISOString().slice(0, 16);
         }
         
-        await loadUsers();
         document.getElementById('bindingModal').classList.add('show');
       } catch (error) {
         console.error('加载绑定失败:', error);
@@ -699,7 +763,7 @@
     // 切换绑定状态
     async function toggleBinding(id, enable) {
       try {
-        const response = await fetch(`/api/hardware/bluetooth/binding/${id}`, {
+        const response = await apiFetch(`/api/hardware/bluetooth/binding/${id}`, {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({is_active: enable})
@@ -722,7 +786,7 @@
       if (!confirm('确定删除此绑定？')) return;
       
       try {
-        const response = await fetch(`/api/hardware/bluetooth/binding/${id}`, {
+        const response = await apiFetch(`/api/hardware/bluetooth/binding/${id}`, {
           method: 'DELETE'
         });
         
@@ -746,7 +810,7 @@
         // 选择一个在线且启用的控制器（优先 door_controller*），用于下发进入配对模式的任务
         let controllerId = null;
         try {
-          const devRes = await fetch('/api/hardware/devices');
+          const devRes = await apiFetch('/api/hardware/devices');
           if (devRes.ok) {
             const devices = await devRes.json();
             const now = Date.now();
@@ -763,7 +827,7 @@
         const payload = { binding_id: bindingId, timeout_seconds: 30 };
         if (controllerId) payload.controller_device_id = controllerId;
 
-        const response = await fetch('/api/hardware/bluetooth/pairing/start', {
+        const response = await apiFetch('/api/hardware/bluetooth/pairing/start', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(payload)
@@ -811,7 +875,7 @@
     // 完成配对（从硬件调用）
     async function completePairing(bindingId, deviceIrk, deviceLtk, deviceName, firmwareVersion) {
       try {
-        const response = await fetch('/api/hardware/bluetooth/pairing/complete', {
+        const response = await apiFetch('/api/hardware/bluetooth/pairing/complete', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -843,7 +907,7 @@
       }
       
       try {
-        const response = await fetch(`/api/hardware/bluetooth/pairing/${bindingId}`, {
+        const response = await apiFetch(`/api/hardware/bluetooth/pairing/${bindingId}`, {
           method: 'DELETE'
         });
         
@@ -905,22 +969,28 @@
     async function startScan() {
       try {
         // 调用后端API获取扫描设备
-        const response = await fetch('/api/hardware/bluetooth/scan');
+        const response = await apiFetch('/api/hardware/bluetooth/scan');
         
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         
         const devices = await response.json();
+        const deviceCount = document.getElementById('deviceCount');
         const grid = document.getElementById('scannedDevices');
         const noDevices = document.getElementById('noDevicesFound');
+
+        if (deviceCount) {
+          const count = Array.isArray(devices) ? devices.length : 0;
+          deviceCount.textContent = `(${count}台)`;
+        }
         
         if (!devices || devices.length === 0) {
           // 没有设备 - 清理所有离线设备卡片
           cleanupOfflineDevices(grid);
           if (grid.children.length === 0) {
             noDevices.style.display = 'block';
-            noDevices.textContent = '🔍 未扫描到设备（门禁设备将每5秒上报一次）';
+            noDevices.innerHTML = '🔍 暂无可见蓝牙设备<br><small>请确认门禁终端已烧录 BLE 扫描固件并联网；终端会调用 /api/hardware/bluetooth/report-scan-batch 上报数据。</small>';
           }
           return;
         }
@@ -1055,13 +1125,17 @@
     async function authorizeDevice(mac, deviceName) {
       try {
         // 加载用户列表供选择
-        const response = await fetch('/api/users');
-        if (!response.ok) {
+        const [userResponse, deviceResponse] = await Promise.all([
+          apiFetch('/api/users/'),
+          apiFetch('/api/hardware/devices')
+        ]);
+        if (!userResponse.ok) {
           showToast('无法加载用户列表', 'error');
           return;
         }
         
-        const users = await response.json();
+        const users = await userResponse.json();
+        const hardwareDevices = deviceResponse.ok ? await deviceResponse.json() : [];
         if (users.length === 0) {
           showToast('系统中没有用户，请先创建用户', 'error');
           return;
@@ -1071,6 +1145,11 @@
         let userOptions = users.map(user => 
           `<option value="${user.id}">${user.full_name || user.username}</option>`
         ).join('');
+        const controllerOptions = [`<option value="">全部设备（不限制）</option>`]
+          .concat((hardwareDevices || []).filter(d => d.is_active).map(device =>
+            `<option value="${device.device_id}">${device.device_name || device.device_id} (${device.device_id})</option>`
+          ))
+          .join('');
         
         // 使用简单对话框让用户选择
         const userSelect = document.createElement('div');
@@ -1083,6 +1162,10 @@
               <label style="display: block; margin-bottom: 0.5rem; font-weight: bold;">选择用户:</label>
               <select id="quickUserSelect" style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1.5rem;">
                 ${userOptions}
+              </select>
+              <label style="display: block; margin-bottom: 0.5rem; font-weight: bold;">授权硬件设备:</label>
+              <select id="quickControllerSelect" style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1.5rem;">
+                ${controllerOptions}
               </select>
               <div style="display: flex; gap: 0.5rem;">
                 <button onclick="confirmQuickAuthorize('${mac}', '${deviceName}')" class="btn btn-primary" style="flex: 1;">确认授权</button>
@@ -1103,6 +1186,7 @@
     // 确认快速授权
     async function confirmQuickAuthorize(mac, deviceName) {
       const userId = document.getElementById('quickUserSelect').value;
+      const controllerDeviceId = document.getElementById('quickControllerSelect')?.value || null;
       
       if (!userId) {
         showToast('请选择用户', 'error');
@@ -1114,12 +1198,13 @@
           user_id: parseInt(userId),
           device_id: mac.toUpperCase(),
           device_name: deviceName,
+          controller_device_id: controllerDeviceId,
           is_paired: false,
           max_daily_uses: 0,
           is_active: true
         };
         
-        const response = await fetch('/api/hardware/bluetooth/bindings', {
+        const response = await apiFetch('/api/hardware/bluetooth/bindings', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(data)
@@ -1188,8 +1273,21 @@
       }
     }
 
+    function ensureScannerRunning() {
+      const panel = document.getElementById('scannerPanel');
+      if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+      }
+      startScan();
+      if (window.scanInterval) {
+        clearInterval(window.scanInterval);
+      }
+      window.scanInterval = setInterval(startScan, 3000);
+    }
+
     // 页面加载时初始化
     loadBindings();
+    ensureScannerRunning();
     
     // 定期刷新冷却期状态（每30秒）
     setInterval(() => {

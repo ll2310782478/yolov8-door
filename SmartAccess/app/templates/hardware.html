@@ -75,7 +75,7 @@
   <script src="/static/js/common.js"></script>
   <script>
     window.addEventListener('DOMContentLoaded', async () => {
-      const token = localStorage.getItem('token');
+      const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
       if (!token) {
         window.location.href = '/web/auth';
         return;
@@ -261,7 +261,7 @@
 
     <script>
 
-        const token = localStorage.getItem('token');
+        const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
         const username = localStorage.getItem('username');
         if (!token) { window.location.href = '/web/auth'; }
         else { document.getElementById('welcome').textContent = username ? `你好，${username}` : '已登录'; }
@@ -290,25 +290,29 @@
             box.textContent = msg;
             box.className = 'status ' + (good ? 'good' : bad ? 'bad' : '');
         }
-        function parseUtcPlus8(dateStr) {
-            if (!dateStr) return null;
-            const utc = new Date(dateStr.endsWith('Z') ? dateStr : `${dateStr}Z`);
-            if (isNaN(utc.getTime())) return null;
-            const display = new Date(utc.getTime() + 8 * 3600 * 1000);
-            return { utc, display };
+        function parseServerTime(dateStr) {
+          if (!dateStr) return null;
+          let normalized = String(dateStr).trim().replace(' ', 'T');
+          const hasTimezone = /Z$|[+-]\d{2}:?\d{2}$/.test(normalized);
+          // 后端返回无时区时间时，按服务器约定的 UTC+8 解析，避免显示提前/滞后 8 小时
+          if (!hasTimezone) normalized += '+08:00';
+          const parsed = new Date(normalized);
+          if (isNaN(parsed.getTime())) return null;
+          return parsed;
         }
         function renderStats(devices) {
             const now = Date.now();
             let online = 0, offline = 0, recent = '-';
             let latest = 0;
             devices.forEach(d => {
-                const parsed = parseUtcPlus8(d.last_heartbeat);
-                const age = parsed ? (now - parsed.utc.getTime()) / 1000 : null;
-                const isOnline = d.connection_status === 'online' && age !== null && age < 90;
+            const parsed = parseServerTime(d.last_heartbeat);
+            const rawAge = parsed ? Math.floor((now - parsed.getTime()) / 1000) : null;
+            const age = rawAge !== null && rawAge >= 0 ? rawAge : null;
+            const isOnline = d.connection_status === 'online' && age !== null && age < 90;
                 if (isOnline) online++; else offline++;
-                if (parsed && parsed.utc.getTime() > latest) {
-                    latest = parsed.utc.getTime();
-                    recent = `${parsed.display.toLocaleString('zh-CN')} (${Math.floor(age)}s前)`;
+            if (parsed && parsed.getTime() > latest) {
+              latest = parsed.getTime();
+              recent = `${parsed.toLocaleString('zh-CN')}${age !== null ? ` (${age}s前)` : ''}`;
                 }
             });
             document.getElementById('stat_online').textContent = online;
@@ -323,10 +327,11 @@
                 return;
             }
             devices.forEach(d => {
-                const parsed = parseUtcPlus8(d.last_heartbeat);
-                const heartbeatAgeSec = parsed ? Math.floor((Date.now() - parsed.utc.getTime()) / 1000) : null;
+              const parsed = parseServerTime(d.last_heartbeat);
+              const rawAge = parsed ? Math.floor((Date.now() - parsed.getTime()) / 1000) : null;
+              const heartbeatAgeSec = rawAge !== null && rawAge >= 0 ? rawAge : null;
                 const online = d.connection_status === 'online' && heartbeatAgeSec !== null && heartbeatAgeSec < 90;
-                const heartbeatText = parsed ? `${parsed.display.toLocaleString('zh-CN')} (${heartbeatAgeSec}s前)` : '-';
+              const heartbeatText = parsed ? `${parsed.toLocaleString('zh-CN')}${heartbeatAgeSec !== null ? ` (${heartbeatAgeSec}s前)` : ''}` : '-';
                 const statusPill = `<span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : '离线'}</span>`;
                 const activeText = d.is_active ? '启用' : '禁用';
                 const locIp = `${d.location || '-'}${d.ip_address ? ' / ' + d.ip_address : ''}`;
@@ -435,8 +440,8 @@
                 box.innerHTML = '';
                 if (!data.length) { box.textContent = '暂无日志'; return; }
                 data.forEach(log => {
-                    const parsed = parseUtcPlus8(log.timestamp);
-                    const timeText = parsed ? parsed.display.toLocaleString('zh-CN') : '-';
+                  const parsed = parseServerTime(log.timestamp);
+                  const timeText = parsed ? parsed.toLocaleString('zh-CN') : '-';
                     const item = document.createElement('div');
                     item.className = 'log-item';
                     item.innerHTML = `

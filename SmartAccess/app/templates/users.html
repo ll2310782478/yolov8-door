@@ -130,7 +130,7 @@
   <script src="/static/js/common.js"></script>
   <script>
     window.addEventListener('DOMContentLoaded', async () => {
-      const token = localStorage.getItem('token');
+      const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
       if (!token) {
         window.location.href = '/web/auth';
         return;
@@ -143,6 +143,9 @@
         if (!res.ok) throw new Error('未授权');
       } catch (err) {
         localStorage.removeItem('token');
+        localStorage.removeItem('access_token');
+        sessionStorage.removeItem('token');
+        sessionStorage.removeItem('access_token');
         window.location.href = '/web/auth';
       }
     });
@@ -314,7 +317,7 @@
     
       <script>
 
-        const token = localStorage.getItem('token');
+        const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
         const username = localStorage.getItem('username');
         if (!token) {
             window.location.href = '/web/auth';
@@ -326,6 +329,14 @@
         function loadUsers() {
             fetch('/api/users/', { headers: authHeaders() })
                 .then(async response => {
+              if (response.status === 401) {
+                localStorage.removeItem('token');
+                localStorage.removeItem('access_token');
+                sessionStorage.removeItem('token');
+                sessionStorage.removeItem('access_token');
+                window.location.href = '/web/auth';
+                throw new Error('登录已过期，请重新登录');
+              }
                     const data = await response.json();
                     if (!response.ok) throw new Error(data.detail || '加载用户失败');
                     return data;

@@ -88,13 +88,36 @@
           border: 1px solid var(--border);
           border-radius: 12px;
           display: flex;
-          align-items: center;
-          gap: 1rem;
+          flex-direction: column;
+          gap: 0.9rem;
           margin-bottom: 2rem;
+        }
+        .device-action-row {
+          display: flex;
+          align-items: center;
+          gap: 0.7rem;
+          width: 100%;
+          flex-wrap: wrap;
+        }
+        .device-action-row label {
+          min-width: 104px;
+          font-size: 0.92rem;
+          color: #4a5568;
+          font-weight: 500;
+        }
+        .device-action-row select {
+          flex: 1;
+          min-width: 220px;
+          padding: 0.6rem 0.8rem;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          background: #fff;
         }
         #scanStatus {
           color: #4a5568;
           font-size: 0.95rem;
+          display: block;
+          width: 100%;
         }
         .table thead {
           background: #f7fafc;
@@ -322,18 +345,27 @@
       <div class="card-box">
         <div class="section-title">设备选择与识别</div>
         <div class="device-selector">
-          <label style="margin: 0; font-weight: 500;">选择设备：</label>
-          <select id="deviceSelect" style="flex: 1;"></select>
+          <label style="margin: 0; font-weight: 500;">设备列表：</label>
+          <span style="color:#4a5568; font-size:0.92rem;">点击识别与录入卡片可分别选择不同设备</span>
           <button class="btn-outline" id="refreshDevices">🔄 刷新设备</button>
         </div>
 
         <div class="scan-box">
-          <button id="btnScan" class="btn-primary">📱 点击识别</button>
+          <div class="device-action-row">
+            <label for="scanDeviceSelect">点击识别设备</label>
+            <select id="scanDeviceSelect"></select>
+            <button id="btnScan" class="btn-primary">📱 点击识别</button>
+          </div>
+          <div class="device-action-row">
+            <label for="enrollDeviceSelect">录入卡片设备</label>
+            <select id="enrollDeviceSelect"></select>
+            <button id="btnEnroll" class="btn-success">📝 录入卡片</button>
+          </div>
           <span id="scanStatus"></span>
         </div>
 
         <div id="resultCard" class="result-card">
-          <div class="result-title">✓ 识别结果</div>
+          <div class="result-title">✓ 执行结果</div>
           <div id="resultText" class="result-text"></div>
           <button id="closeResult" class="btn-outline" style="padding: 0.5rem 1rem;">关闭</button>
         </div>
@@ -438,7 +470,6 @@
   </div>
 
   <script src="/static/js/nfc.js"></script>
-  <script src="/static/js/bootstrap.bundle.min.js"></script>
 
   
   <script src="/static/js/common.js"></script>

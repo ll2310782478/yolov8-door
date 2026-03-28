@@ -39,6 +39,8 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
+#include <WebServer.h>
+#include <Preferences.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 #include <freertos/FreeRTOS.h>
@@ -48,17 +50,21 @@
 
 // ==================== 1. 用户配置 ====================
 
-const char* SSID        = "安居门业";
-const char* PASSWORD    = "15929256728";
-const char* SERVER_HOST = "192.168.1.42";
-const int   SERVER_PORT = 8000;
-const char* FALLBACK_HOST = "";
+const char* DEFAULT_SSID         = "安居门业";
+const char* DEFAULT_PASSWORD     = "15929256728";
+const char* DEFAULT_SERVER_HOST  = "192.168.1.42";
+const int   DEFAULT_SERVER_PORT  = 8000;
+const char* DEFAULT_FALLBACK_HOST = "";
 
-const char* DEVICE_ID   = "door_controller_2";
-const char* DEVICE_NAME = "门禁2";
-const char* DEVICE_TYPE = "door_controller_nfc";
-const char* DEVICE_LOC  = "办公室";
-const char* DEVICE_MODE = "remote_nfc";
+const char* DEFAULT_DEVICE_ID    = "door_controller_2";
+const char* DEFAULT_DEVICE_NAME  = "门禁2";
+const char* DEFAULT_DEVICE_TYPE  = "door_controller_nfc";
+const char* DEFAULT_DEVICE_LOC   = "办公室";
+const char* DEFAULT_DEVICE_MODE  = "remote_nfc";
+
+const char* AP_SSID = "SmartAccess-Setup";
+const char* AP_PASSWORD = "12345678";
+const unsigned long RESET_HOLD_MS = 8000;
 
 // ==================== 2. 硬件引脚配置 ====================
 
@@ -91,6 +97,9 @@ const char* DEVICE_MODE = "remote_nfc";
 // RGB LED
 #define RGB_PIN 48
 #define RGB_COUNT 1
+
+// 长按重置按钮（ESP32-S3 BOOT 按键常见为 GPIO0）
+#define RESET_BTN_PIN 0
 
 // ==================== 3. 全局数据结构 ====================
 
@@ -147,13 +156,252 @@ bool enroll_mode = false;  // ENROLL 模式下只返回首张卡
 Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET, &Wire);
 Adafruit_NeoPixel pixels(RGB_COUNT, RGB_PIN, NEO_GRB + NEO_KHZ800);
 WiFiClient wifiClient;
-String currentHost = SERVER_HOST;
+WebServer configServer(80);
+Preferences preferences;
+
+struct DeviceConfig {
+  String wifiSsid;
+  String wifiPassword;
+  String serverHost;
+  int serverPort;
+  String fallbackHost;
+  String deviceId;
+  String deviceName;
+  String deviceType;
+  String deviceLocation;
+  String deviceMode;
+  bool configured;
+};
+
+DeviceConfig gConfig;
+String currentHost = DEFAULT_SERVER_HOST;
+int currentServerPort = DEFAULT_SERVER_PORT;
+String currentDeviceId = DEFAULT_DEVICE_ID;
+String currentDeviceName = DEFAULT_DEVICE_NAME;
+String currentDeviceType = DEFAULT_DEVICE_TYPE;
+String currentDeviceLoc = DEFAULT_DEVICE_LOC;
+String currentDeviceMode = DEFAULT_DEVICE_MODE;
+
+bool apConfigSaved = false;
+unsigned long resetPressStartMs = 0;
+
+bool loadDeviceConfig() {
+  preferences.begin("devcfg", true);
+  gConfig.configured = preferences.getBool("configured", false);
+  gConfig.wifiSsid = preferences.getString("wifi_ssid", DEFAULT_SSID);
+  gConfig.wifiPassword = preferences.getString("wifi_pwd", DEFAULT_PASSWORD);
+  gConfig.serverHost = preferences.getString("server_host", DEFAULT_SERVER_HOST);
+  gConfig.serverPort = preferences.getInt("server_port", DEFAULT_SERVER_PORT);
+  gConfig.fallbackHost = preferences.getString("fallback_host", DEFAULT_FALLBACK_HOST);
+  gConfig.deviceId = preferences.getString("device_id", DEFAULT_DEVICE_ID);
+  gConfig.deviceName = preferences.getString("device_name", DEFAULT_DEVICE_NAME);
+  gConfig.deviceType = preferences.getString("device_type", DEFAULT_DEVICE_TYPE);
+  gConfig.deviceLocation = preferences.getString("device_loc", DEFAULT_DEVICE_LOC);
+  gConfig.deviceMode = preferences.getString("device_mode", DEFAULT_DEVICE_MODE);
+  preferences.end();
+
+  if (gConfig.serverPort <= 0) gConfig.serverPort = DEFAULT_SERVER_PORT;
+  return gConfig.configured;
+}
+
+void saveDeviceConfig() {
+  preferences.begin("devcfg", false);
+  preferences.putBool("configured", true);
+  preferences.putString("wifi_ssid", gConfig.wifiSsid);
+  preferences.putString("wifi_pwd", gConfig.wifiPassword);
+  preferences.putString("server_host", gConfig.serverHost);
+  preferences.putInt("server_port", gConfig.serverPort);
+  preferences.putString("fallback_host", gConfig.fallbackHost);
+  preferences.putString("device_id", gConfig.deviceId);
+  preferences.putString("device_name", gConfig.deviceName);
+  preferences.putString("device_type", gConfig.deviceType);
+  preferences.putString("device_loc", gConfig.deviceLocation);
+  preferences.putString("device_mode", gConfig.deviceMode);
+  preferences.end();
+}
+
+void clearDeviceConfig() {
+  preferences.begin("devcfg", false);
+  preferences.clear();
+  preferences.end();
+  Serial.println("[CFG] 已清除设备本地配置");
+}
+
+void applyRuntimeConfig() {
+  currentHost = gConfig.serverHost;
+  currentServerPort = gConfig.serverPort;
+  currentDeviceId = gConfig.deviceId;
+  currentDeviceName = gConfig.deviceName;
+  currentDeviceType = gConfig.deviceType;
+  currentDeviceLoc = gConfig.deviceLocation;
+  currentDeviceMode = gConfig.deviceMode;
+}
+
+String buildConfigHtml() {
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>SmartAccess 设备配置</title>"
+                "<style>body{font-family:Arial;padding:18px;background:#f6f7fb}h2{color:#334}"
+                ".card{background:#fff;padding:16px;border-radius:10px;max-width:680px;margin:auto;box-shadow:0 4px 16px rgba(0,0,0,.08)}"
+                "label{display:block;margin-top:12px;font-weight:600;color:#444}input{width:100%;padding:10px;border:1px solid #d8dce6;border-radius:6px;margin-top:6px}"
+                "button{margin-top:16px;background:#4f46e5;color:#fff;border:none;padding:10px 16px;border-radius:6px;font-size:15px}</style></head><body>";
+  html += "<div class='card'><h2>SmartAccess 终端初始化配置</h2>";
+  html += "<form method='POST' action='/save'>";
+  html += "<label>WiFi 名称(SSID)</label><input name='wifi_ssid' value='" + gConfig.wifiSsid + "' required>";
+  html += "<label>WiFi 密码</label><input name='wifi_pwd' value='" + gConfig.wifiPassword + "' required>";
+  html += "<label>服务器地址</label><input name='server_host' value='" + gConfig.serverHost + "' required>";
+  html += "<label>服务器端口</label><input name='server_port' type='number' value='" + String(gConfig.serverPort) + "' required>";
+  html += "<label>设备ID</label><input name='device_id' value='" + gConfig.deviceId + "' required>";
+  html += "<label>设备名称</label><input name='device_name' value='" + gConfig.deviceName + "' required>";
+  html += "<label>设备位置</label><input name='device_loc' value='" + gConfig.deviceLocation + "'>";
+  html += "<label>设备类型</label><input name='device_type' value='" + gConfig.deviceType + "'>";
+  html += "<label>设备模式</label><input name='device_mode' value='" + gConfig.deviceMode + "'>";
+  html += "<button type='submit'>保存并连接服务器</button></form>";
+  html += "<p style='margin-top:12px;color:#666;font-size:13px'>配置保存后，设备将自动关闭AP并连接网络进行注册。</p></div></body></html>";
+  return html;
+}
+
+void handleConfigRoot() {
+  configServer.send(200, "text/html; charset=utf-8", buildConfigHtml());
+}
+
+void handleConfigSave() {
+  gConfig.wifiSsid = configServer.arg("wifi_ssid");
+  gConfig.wifiPassword = configServer.arg("wifi_pwd");
+  gConfig.serverHost = configServer.arg("server_host");
+  gConfig.serverPort = configServer.arg("server_port").toInt();
+  gConfig.deviceId = configServer.arg("device_id");
+  gConfig.deviceName = configServer.arg("device_name");
+  gConfig.deviceLocation = configServer.arg("device_loc");
+  gConfig.deviceType = configServer.arg("device_type");
+  gConfig.deviceMode = configServer.arg("device_mode");
+
+  if (gConfig.serverPort <= 0) gConfig.serverPort = DEFAULT_SERVER_PORT;
+  if (gConfig.wifiSsid.isEmpty() || gConfig.wifiPassword.isEmpty() || gConfig.serverHost.isEmpty() ||
+      gConfig.deviceId.isEmpty() || gConfig.deviceName.isEmpty()) {
+    configServer.send(400, "text/plain; charset=utf-8", "配置不完整，请返回重试");
+    return;
+  }
+
+  saveDeviceConfig();
+  applyRuntimeConfig();
+  apConfigSaved = true;
+  configServer.send(200, "text/html; charset=utf-8",
+                    "<html><body style='font-family:Arial;padding:20px'><h3>配置保存成功</h3>"
+                    "<p>设备正在关闭配置热点并连接服务器，请查看串口日志。</p></body></html>");
+}
+
+void startConfigPortal() {
+  Serial.println("[CFG] 进入 AP 配置模式");
+  WiFi.disconnect(true, true);
+  delay(200);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.printf("[CFG] AP 已启动: SSID=%s, PASS=%s, IP=%s\n", AP_SSID, AP_PASSWORD, apIP.toString().c_str());
+
+  apConfigSaved = false;
+  configServer.on("/", HTTP_GET, handleConfigRoot);
+  configServer.on("/save", HTTP_POST, handleConfigSave);
+  configServer.begin();
+
+  while (!apConfigSaved) {
+    configServer.handleClient();
+    delay(10);
+  }
+
+  configServer.stop();
+  WiFi.softAPdisconnect(true);
+  delay(200);
+  Serial.println("[CFG] AP 配置模式结束，准备连接网络");
+}
+
+bool connectWiFiFromConfig() {
+  Serial.print("🔌 正在连接 WiFi: ");
+  Serial.println(gConfig.wifiSsid);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(gConfig.wifiSsid.c_str(), gConfig.wifiPassword.c_str());
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ WiFi 已连接");
+    Serial.println("📍 IP: " + WiFi.localIP().toString());
+    return true;
+  }
+
+  Serial.println("\n⚠️  WiFi 连接失败");
+  return false;
+}
+
+bool registerDeviceToServer() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  HTTPClient http;
+  String url = String("http://") + currentHost + ":" + String(currentServerPort) + "/api/hardware/devices";
+  if (!http.begin(wifiClient, url)) return false;
+
+  StaticJsonDocument<256> doc;
+  doc["device_id"] = currentDeviceId;
+  doc["device_name"] = currentDeviceName;
+  doc["device_type"] = currentDeviceType;
+  doc["location"] = currentDeviceLoc;
+  doc["ip_address"] = WiFi.localIP().toString();
+  String body;
+  serializeJson(doc, body);
+
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST((uint8_t*)(body.c_str()), body.length());
+  http.end();
+
+  Serial.printf("[REG] 设备注册响应码: %d\n", code);
+  return code >= 200 && code < 300;
+}
+
+bool isResetButtonHeldAtBoot() {
+  if (digitalRead(RESET_BTN_PIN) != LOW) return false;
+
+  Serial.printf("[RESET] 检测到按键按下，持续按住 %lu 秒可清除配置...\n", RESET_HOLD_MS / 1000);
+  unsigned long start = millis();
+  while (digitalRead(RESET_BTN_PIN) == LOW) {
+    if (millis() - start >= RESET_HOLD_MS) {
+      Serial.println("[RESET] 长按确认，执行清除配置");
+      return true;
+    }
+    delay(50);
+  }
+  return false;
+}
+
+void monitorResetButtonRuntime() {
+  if (digitalRead(RESET_BTN_PIN) == LOW) {
+    if (resetPressStartMs == 0) {
+      resetPressStartMs = millis();
+    } else if (millis() - resetPressStartMs >= RESET_HOLD_MS) {
+      Serial.println("[RESET] 运行时长按触发，清除配置并重启...");
+      showPixel(180, 0, 0);
+      clearDeviceConfig();
+      delay(500);
+      ESP.restart();
+    }
+  } else {
+    resetPressStartMs = 0;
+  }
+}
 
 // ==================== 6. 硬件控制函数 ====================
 
 void initHardware() {
   Serial.begin(115200);
   delay(500);
+
+  // 初始化重置按键
+  pinMode(RESET_BTN_PIN, INPUT_PULLUP);
   
   // 初始化 LED
   pixels.begin();
@@ -402,8 +650,8 @@ void networkPoller(void *parameter) {
       
       // 执行轮询（可能阻塞，但在 Core1 上，不影响 Core0 的 NFC）
       HTTPClient http;
-      String url = String("http://") + currentHost + ":" + String(SERVER_PORT) 
-                 + "/api/hardware/nfc/command/poll?device_id=" + DEVICE_ID;
+      String url = String("http://") + currentHost + ":" + String(currentServerPort)
+             + "/api/hardware/nfc/command/poll?device_id=" + currentDeviceId;
       
       if (http.begin(wifiClient, url)) {
         int code = http.GET();
@@ -469,8 +717,8 @@ void heartbeatTask(void *parameter) {
       
       // 发送心跳
       HTTPClient http;
-      String url = String("http://") + currentHost + ":" + String(SERVER_PORT) 
-                 + "/api/hardware/devices/" + DEVICE_ID + "/heartbeat";
+      String url = String("http://") + currentHost + ":" + String(currentServerPort)
+             + "/api/hardware/devices/" + currentDeviceId + "/heartbeat";
       
       if (http.begin(wifiClient, url)) {
         StaticJsonDocument<192> doc;
@@ -513,11 +761,11 @@ void eventHandler() {
           int code = -1;
           for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
             HTTPClient http;
-            String url = String("http://") + currentHost + ":" + String(SERVER_PORT) + "/api/hardware/nfc-scan";
+            String url = String("http://") + currentHost + ":" + String(currentServerPort) + "/api/hardware/nfc-scan";
             if (http.begin(wifiClient, url)) {
               StaticJsonDocument<128> doc;
               doc["card_uid"] = String(event.data);
-              doc["device_id"] = DEVICE_ID;
+              doc["device_id"] = currentDeviceId;
               String body;
               serializeJson(doc, body);
               http.addHeader("Content-Type", "application/json");
@@ -601,6 +849,17 @@ void eventHandler() {
 
 void setup() {
   initHardware();
+
+  // 启动时长按 RESET 按键 8 秒可清除配置并进入 AP 配网模式
+  if (isResetButtonHeldAtBoot()) {
+    clearDeviceConfig();
+  }
+
+  // 尝试读取本地配置；无配置则进入 AP 配置模式
+  if (!loadDeviceConfig()) {
+    startConfigPortal();
+  }
+  applyRuntimeConfig();
   
   // 显示启动信息
   Serial.println("\n╔════════════════════════════════════════════╗");
@@ -611,46 +870,17 @@ void setup() {
   Serial.println("║  Core 1: 网络轮询 + 心跳 + 显示          ║");
   Serial.println("╚════════════════════════════════════════════╝\n");
   
-  // 连接 WiFi
-  Serial.print("🔌 正在连接 WiFi");
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(SSID, PASSWORD);
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ WiFi 已连接");
-    Serial.println("📍 IP: " + WiFi.localIP().toString());
-  } else {
-    Serial.println("\n⚠️  WiFi 连接失败");
+  // 连接 WiFi，失败时返回 AP 模式重新配置
+  if (!connectWiFiFromConfig()) {
+    startConfigPortal();
+    applyRuntimeConfig();
+    connectWiFiFromConfig();
   }
   
   // 注册设备
   if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    String url = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + "/api/hardware/devices";
-    
-    if (http.begin(wifiClient, url)) {
-      StaticJsonDocument<256> doc;
-      doc["device_id"] = DEVICE_ID;
-      doc["device_name"] = DEVICE_NAME;
-      doc["device_type"] = DEVICE_TYPE;
-      doc["location"] = DEVICE_LOC;
-      doc["ip_address"] = WiFi.localIP().toString();
-      String body;
-      serializeJson(doc, body);
-      
-      http.addHeader("Content-Type", "application/json");
-      int code = http.POST((uint8_t*)(body.c_str()), body.length());
-      http.end();
-      
-      Serial.println(code >= 200 && code < 300 ? "[REG] ✅ 设备注册成功" : "[REG] ⚠️  设备已存在或注册失败");
-    }
+    bool registered = registerDeviceToServer();
+    Serial.println(registered ? "[REG] ✅ 设备注册成功" : "[REG] ⚠️  设备已存在或注册失败（等待后台授权后可继续使用）");
   }
   
   // 创建 FreeRTOS 任务（双核）
@@ -704,6 +934,7 @@ void setup() {
 void loop() {
   // 主线程：专注于事件处理（无阻塞）
   eventHandler();
+  monitorResetButtonRuntime();
   
   // 定期输出系统状态
   static unsigned long last_status_time = 0;

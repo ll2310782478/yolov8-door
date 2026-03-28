@@ -133,6 +133,7 @@ class NFCCardResponse(BaseModel):
 class BluetoothBindingCreate(BaseModel):
     user_id: Optional[int] = None  # 允许NULL（访客或系统日志）
     device_id: str
+    controller_device_id: Optional[str] = None  # 绑定的门禁控制器ID，空表示所有设备
     device_name: Optional[str] = None
     is_paired: bool = False
     permission_end_date: Optional[datetime] = None
@@ -140,6 +141,7 @@ class BluetoothBindingCreate(BaseModel):
 
 
 class BluetoothBindingUpdate(BaseModel):
+    controller_device_id: Optional[str] = None
     device_name: Optional[str] = None
     is_active: Optional[bool] = None
     is_paired: Optional[bool] = None
@@ -151,6 +153,7 @@ class BluetoothBindingResponse(BaseModel):
     id: int
     user_id: Optional[int] = None  # 允许NULL（访客或系统日志）
     device_id: str
+    controller_device_id: Optional[str] = None
     device_name: Optional[str] = None
     is_paired: bool
     is_active: bool
@@ -243,6 +246,47 @@ def create_device(device: HardwareDeviceCreate, db: Session = Depends(get_db), c
         connection_status="offline"
     )
     db.add(db_device)
+    db.commit()
+    db.refresh(db_device)
+    return db_device
+
+
+@router.post("/devices/register", response_model=HardwareDeviceResponse)
+def register_device(device: HardwareDeviceCreate, db: Session = Depends(get_db)):
+    """设备自注册接口（供门禁控制器调用，无需管理员令牌）。
+
+    - 若 device_id 不存在：创建新设备并标记为在线
+    - 若 device_id 已存在：更新设备基础信息并刷新心跳
+    """
+    db_device = db.query(HardwareDevice).filter(
+        HardwareDevice.device_id == device.device_id
+    ).first()
+
+    if not db_device:
+        db_device = HardwareDevice(
+            device_id=device.device_id,
+            device_name=device.device_name,
+            device_type=device.device_type,
+            device_mode=device.device_mode,
+            location=device.location,
+            ip_address=device.ip_address,
+            port=device.port,
+            connection_status="online",
+            is_active=True,
+            last_heartbeat=now_utc8(),
+        )
+        db.add(db_device)
+    else:
+        db_device.device_name = device.device_name or db_device.device_name
+        db_device.device_type = device.device_type or db_device.device_type
+        db_device.device_mode = device.device_mode or db_device.device_mode
+        db_device.location = device.location
+        db_device.ip_address = device.ip_address
+        db_device.port = device.port
+        db_device.connection_status = "online"
+        db_device.is_active = True
+        db_device.last_heartbeat = now_utc8()
+
     db.commit()
     db.refresh(db_device)
     return db_device
@@ -665,9 +709,24 @@ class NFCTaskResponse(BaseModel):
 @router.post("/nfc/command", response_model=NFCTaskResponse)
 def create_nfc_command(task_in: NFCTaskCreate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """Web 后台创建一个 NFC 任务（通常是 SCAN），设备会轮询并执行。"""
+    device = db.query(HardwareDevice).filter(HardwareDevice.device_id == task_in.device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="目标设备不存在")
+
+    supports_nfc = (device.device_mode == "remote_nfc") or (device.device_type and "nfc" in device.device_type)
+    if not supports_nfc:
+        raise HTTPException(status_code=400, detail="目标设备不支持NFC命令")
+
+    if not device.is_active or device.connection_status != "online":
+        raise HTTPException(status_code=400, detail="目标设备离线，无法下发命令")
+
+    normalized_command = (task_in.command or "").strip().upper()
+    if normalized_command not in ["SCAN", "ENROLL", "OPEN", "BLE_PAIRING_START"]:
+        raise HTTPException(status_code=400, detail="不支持的命令类型")
+
     task = NFCTask(
         device_id=task_in.device_id,
-        command=task_in.command,
+        command=normalized_command,
         payload=task_in.payload,
         status="pending",
     )
@@ -791,16 +850,27 @@ def create_bluetooth_binding(binding: BluetoothBindingCreate, db: Session = Depe
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
     
+    controller_device_id = (binding.controller_device_id or "").strip() or None
+
+    if controller_device_id:
+        controller = db.query(HardwareDevice).filter(
+            HardwareDevice.device_id == controller_device_id
+        ).first()
+        if not controller:
+            raise HTTPException(status_code=404, detail="绑定的硬件设备不存在")
+
     existing = db.query(BluetoothBinding).filter(
         BluetoothBinding.user_id == binding.user_id,
-        BluetoothBinding.device_id == binding.device_id
+        BluetoothBinding.device_id == binding.device_id,
+        BluetoothBinding.controller_device_id == controller_device_id
     ).first()
     if existing:
-        raise HTTPException(status_code=400, detail="该用户已绑定此蓝牙设备")
+        raise HTTPException(status_code=400, detail="该用户已在此设备范围绑定该蓝牙设备")
     
     bt_binding = BluetoothBinding(
         user_id=binding.user_id,
         device_id=binding.device_id,
+        controller_device_id=controller_device_id,
         device_name=binding.device_name,
         is_paired=binding.is_paired,
         permission_start_date=now_utc8(),
@@ -840,6 +910,7 @@ def list_bluetooth_bindings(
             "id": binding.id,
             "user_id": binding.user_id,
             "device_id": binding.device_id,
+            "controller_device_id": binding.controller_device_id,
             "device_name": binding.device_name,
             "is_paired": binding.is_paired,
             "is_active": binding.is_active,
@@ -882,6 +953,16 @@ def update_bluetooth_binding(binding_id: int, binding_update: BluetoothBindingUp
     if not binding:
         raise HTTPException(status_code=404, detail="绑定不存在")
     
+    if binding_update.controller_device_id is not None:
+        normalized_controller_id = (binding_update.controller_device_id or "").strip()
+        if normalized_controller_id:
+            controller = db.query(HardwareDevice).filter(
+                HardwareDevice.device_id == normalized_controller_id
+            ).first()
+            if not controller:
+                raise HTTPException(status_code=404, detail="绑定的硬件设备不存在")
+        binding.controller_device_id = normalized_controller_id or None
+
     if binding_update.device_name:
         binding.device_name = binding_update.device_name
     if binding_update.is_active is not None:
@@ -998,6 +1079,18 @@ def verify_bluetooth_device(
 ):
     """验证蓝牙设备权限 - 硬件轮询用（支持MAC和IRK识别）"""
     bt_mac_upper = bt_mac.upper()
+
+    def matches_controller(target_binding: BluetoothBinding) -> bool:
+        return (not target_binding.controller_device_id) or (target_binding.controller_device_id == device_id)
+
+    # 信号过弱直接拒绝，避免远距离误触发
+    if rssi < -80:
+        return {
+            "allow": False,
+            "user_name": "WeakSignal",
+            "reason": f"Signal too weak ({rssi} dBm)",
+            "in_cooldown": False
+        }
     
     # ✅ 检查冷却期（3分钟内已开过门）
     current_time = time.time()
@@ -1030,7 +1123,7 @@ def verify_bluetooth_device(
             BluetoothPairingRecord.device_irk == device_irk.upper()
         ).first()
         
-        if pairing_record:
+        if pairing_record and pairing_record.binding and pairing_record.binding.is_active and matches_controller(pairing_record.binding):
             binding = pairing_record.binding
             # 更新连接信息
             pairing_record.last_connection = now_utc8()
@@ -1039,10 +1132,13 @@ def verify_bluetooth_device(
     
     # 降级到MAC识别（未配对或配对失败）
     if not binding:
-        binding = db.query(BluetoothBinding).filter(
+        candidates = db.query(BluetoothBinding).filter(
             BluetoothBinding.device_id == bt_mac_upper,
             BluetoothBinding.is_active == True
-        ).first()
+        ).all()
+        exact_match = next((item for item in candidates if item.controller_device_id == device_id), None)
+        global_match = next((item for item in candidates if not item.controller_device_id), None)
+        binding = exact_match or global_match
     
     if not binding:
         return {"allow": False, "user_name": "Unknown", "reason": "Device not bound", "in_cooldown": False}
@@ -1145,9 +1241,13 @@ def record_bluetooth_access_log(
     bt_mac_upper = bt_mac.upper()
     
     # 查询绑定信息获取user_id
-    binding = db.query(BluetoothBinding).filter(
-        BluetoothBinding.device_id == bt_mac_upper
-    ).first()
+    candidates = db.query(BluetoothBinding).filter(
+        BluetoothBinding.device_id == bt_mac_upper,
+        BluetoothBinding.is_active == True
+    ).all()
+    exact_match = next((item for item in candidates if item.controller_device_id == device_id), None)
+    global_match = next((item for item in candidates if not item.controller_device_id), None)
+    binding = exact_match or global_match
     
     if binding:
         access_log = AccessLog(

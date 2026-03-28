@@ -109,6 +109,14 @@ def init_db():
                 for col, ddl in needed.items():
                     if col not in cols:
                         conn.execute(text(f"ALTER TABLE nfc_cards ADD COLUMN {col} {ddl}"))
+
+                # 检查并添加 bluetooth_bindings.controller_device_id（MySQL）
+                res_bt = conn.execute(text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=:db AND TABLE_NAME='bluetooth_bindings'"
+                ), {"db": db_name}).fetchall()
+                bt_cols = {r[0] for r in res_bt}
+                if "controller_device_id" not in bt_cols:
+                    conn.execute(text("ALTER TABLE bluetooth_bindings ADD COLUMN controller_device_id VARCHAR(50)"))
                 conn.commit()
             else:
                 # SQLite：PRAGMA 检查列并补齐
@@ -126,6 +134,12 @@ def init_db():
                 for col, ddl in needed.items():
                     if col not in cols:
                         conn.execute(text(f"ALTER TABLE nfc_cards ADD COLUMN {col} {ddl}"))
+
+                # SQLite：补齐 bluetooth_bindings.controller_device_id
+                res_bt = conn.execute(text("PRAGMA table_info('bluetooth_bindings')")).fetchall()
+                bt_cols = {r[1] for r in res_bt}
+                if "controller_device_id" not in bt_cols:
+                    conn.execute(text("ALTER TABLE bluetooth_bindings ADD COLUMN controller_device_id VARCHAR(50)"))
                 conn.commit()
     except Exception as e:
         # 保守处理：仅打印警告，不阻断启动

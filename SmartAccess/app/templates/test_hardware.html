@@ -22,6 +22,7 @@
   </style>
 </head>
 <body>
+  <script src="/static/js/common.js"></script>
   <header>
     <h1>🔧 硬件测试页面（查看设备注册信息并发送指令）</h1>
   </header>
@@ -77,10 +78,10 @@
   </main>
 
   <script>
-    const token = localStorage.getItem('token');
+    const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
     if (!token) { window.location.href = '/web/auth'; }
 
-    function authHeaders(extra = {}) { return { 'Authorization': `Bearer ${token}`, ...extra }; }
+    function authHeaders(extra = {}) { return (window.authHeaders ? window.authHeaders(extra) : { 'Authorization': `Bearer ${token}`, ...extra }); }
     async function parseJsonSafe(res) {
       try {
         const text = await res.text();

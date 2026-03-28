@@ -2,11 +2,51 @@
 
 const apiBase = '/api/hardware';
 
+function buildHeaders(extra = {}) {
+  if (window.authHeaders) return window.authHeaders(extra);
+  const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
+  return token ? { Authorization: `Bearer ${token}`, ...extra } : { ...extra };
+}
+
+async function apiFetch(url, options = {}) {
+  const merged = {
+    ...options,
+    headers: buildHeaders(options.headers || {})
+  };
+
+  const res = await fetch(url, merged);
+  if (res.status === 401) {
+    showAlert('登录已过期，请重新登录', 'danger');
+    setTimeout(() => { window.location.href = '/web/auth'; }, 600);
+  }
+  return res;
+}
+
+async function parseJsonSafe(res) {
+  try { return await res.json(); }
+  catch (_) { return null; }
+}
+
+function extractErrorMessage(body, fallback) {
+  if (!body) return fallback;
+  if (typeof body.detail === 'string') return body.detail;
+  if (body.error && typeof body.error.message === 'string') return body.error.message;
+  return fallback;
+}
+
 async function fetchUsers(){
   // 获取用户列表用于选择
   try{
-    const res = await fetch('/api/users');
-    const users = await res.json();
+    const res = await apiFetch('/api/users/');
+    const users = await parseJsonSafe(res);
+    if(!res.ok){
+      showAlert(extractErrorMessage(users, '加载用户失败'), 'danger');
+      return;
+    }
+    if(!Array.isArray(users)){
+      showAlert('用户数据格式异常', 'danger');
+      return;
+    }
     const sel = document.getElementById('userSelect');
     sel.innerHTML = '<option value="">-- 选择用户 --</option>';
     users.forEach(u => {
@@ -19,26 +59,69 @@ async function fetchUsers(){
 }
 
 async function fetchDevices(){
-  const res = await fetch(apiBase + '/devices');
-  const data = await res.json();
-  const sel = document.getElementById('deviceSelect');
-  sel.innerHTML = '';
-  if(data.length === 0){
-    sel.innerHTML = '<option value="">-- 无可用设备 --</option>';
+  const res = await apiFetch(apiBase + '/devices');
+  const data = await parseJsonSafe(res);
+  if(!res.ok){
+    showAlert(extractErrorMessage(data, '加载设备失败'), 'danger');
+    return;
+  }
+  const scanSel = document.getElementById('scanDeviceSelect');
+  const enrollSel = document.getElementById('enrollDeviceSelect');
+  scanSel.innerHTML = '';
+  enrollSel.innerHTML = '';
+  if(!Array.isArray(data)){
+    scanSel.innerHTML = '<option value="">-- 设备数据异常 --</option>';
+    enrollSel.innerHTML = '<option value="">-- 设备数据异常 --</option>';
+    return;
+  }
+
+  const nfcDevices = data.filter(d => {
+    const type = String(d.device_type || '').toLowerCase();
+    const mode = String(d.device_mode || '').toLowerCase();
+    return type.includes('nfc') || mode.includes('nfc');
+  });
+
+  const onlineNfcDevices = nfcDevices.filter(d => {
+    const status = String(d.connection_status || '').toLowerCase();
+    return d.is_active === true && (status === 'online' || status === 'connected');
+  });
+
+  if(nfcDevices.length === 0){
+    scanSel.innerHTML = '<option value="">-- 无可用设备 --</option>';
+    enrollSel.innerHTML = '<option value="">-- 无可用设备 --</option>';
   } else {
-    data.forEach(d => {
-      const opt = document.createElement('option');
-      opt.value = d.device_id;
-      opt.textContent = `${d.device_name || d.device_id} (${d.device_type})`;
-      sel.appendChild(opt);
-    });
+    const displayDevices = onlineNfcDevices.length > 0 ? onlineNfcDevices : nfcDevices;
+    const appendOptions = (sel) => {
+      displayDevices.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.device_id;
+        const status = d.is_active ? (d.connection_status || 'unknown') : 'inactive';
+        opt.textContent = `${d.device_name || d.device_id} (${d.device_type}) [${status}]`;
+        sel.appendChild(opt);
+      });
+    };
+    appendOptions(scanSel);
+    appendOptions(enrollSel);
+    if (onlineNfcDevices.length === 0) {
+      showAlert('当前没有在线NFC设备，命令可能无法被执行', 'danger');
+    }
   }
 }
 
 async function fetchCards(){
-  const res = await fetch(apiBase + '/nfc/cards');
-  const cards = await res.json();
+  const res = await apiFetch(apiBase + '/nfc/cards');
+  const cards = await parseJsonSafe(res);
   const tbody = document.getElementById('cardsTable');
+  
+  if(!res.ok){
+    const msg = extractErrorMessage(cards, '加载卡片失败');
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#e53e3e;">${msg}</td></tr>`;
+    return;
+  }
+  if(!Array.isArray(cards)){
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#e53e3e;">卡片数据格式异常</td></tr>';
+    return;
+  }
   
   if(cards.length === 0){
     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#718096;">暂无卡片数据</td></tr>';
@@ -80,7 +163,7 @@ async function createCard(evt){
   const payload = {user_id: Number(user_id), card_number: card_number, card_name: card_name, max_daily_uses: Number(maxDaily)};
   if(permissionEnd) payload.permission_end_date = new Date(permissionEnd).toISOString();
   
-  const res = await fetch(apiBase + '/nfc/cards', {
+  const res = await apiFetch(apiBase + '/nfc/cards', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify(payload)
@@ -91,19 +174,20 @@ async function createCard(evt){
     document.getElementById('createForm').reset();
     await fetchCards();
   } else {
-    const err = await res.json();
-    showAlert('添加失败: ' + (err.detail || '未知错误'), 'danger');
+    const err = await parseJsonSafe(res);
+    showAlert('添加失败: ' + extractErrorMessage(err, '未知错误'), 'danger');
   }
 }
 
 async function deleteCard(id){
   if(!confirm('确定删除该卡片？')) return;
-  const res = await fetch(apiBase + '/nfc/card/' + id, {method:'DELETE'});
+  const res = await apiFetch(apiBase + '/nfc/card/' + id, {method:'DELETE'});
   if(res.ok){
     showAlert('卡片已删除', 'success');
     await fetchCards();
   } else {
-    showAlert('删除失败', 'danger');
+    const err = await parseJsonSafe(res);
+    showAlert('删除失败: ' + extractErrorMessage(err, '未知错误'), 'danger');
   }
 }
 
@@ -124,7 +208,7 @@ function showAlert(message, type='info', timeout=4000){
 }
 
 async function openEditModal(id){
-  const res = await fetch(apiBase + '/nfc/card/' + id);
+  const res = await apiFetch(apiBase + '/nfc/card/' + id);
   if(!res.ok){ showAlert('获取卡片失败','danger'); return; }
   const card = await res.json();
   document.getElementById('editCardId').value = card.id;
@@ -150,30 +234,30 @@ document.addEventListener('click', (e)=>{
       };
       const permDate = document.getElementById('editPermissionEnd').value;
       if(permDate) payload.permission_end_date = new Date(permDate).toISOString();
-      const r = await fetch(apiBase + '/nfc/card/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      const r = await apiFetch(apiBase + '/nfc/card/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       if(r.ok){
         showAlert('保存成功','success');
         document.getElementById('editModal').classList.remove('show');
         await fetchCards();
       } else {
-        showAlert('保存失败','danger');
+        const err = await parseJsonSafe(r);
+        showAlert('保存失败: ' + extractErrorMessage(err, '未知错误'),'danger');
       }
     })();
   }
 });
 
 async function triggerScan(){
-  const sel = document.getElementById('deviceSelect');
-  const deviceId = sel.value;
+  const deviceId = document.getElementById('scanDeviceSelect').value;
   if(!deviceId){
-    showAlert('请先选择设备', 'danger');
+    showAlert('请先选择“点击识别设备”', 'danger');
     return;
   }
   const status = document.getElementById('scanStatus');
   status.textContent = '📡 发送命令中...';
   
   // 创建任务
-  const res = await fetch(apiBase + '/nfc/command', {
+  const res = await apiFetch(apiBase + '/nfc/command', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({device_id:deviceId, command:'SCAN'})
   });
@@ -192,7 +276,7 @@ async function triggerScan(){
   const timeout = 20000; // 20s
   while(Date.now() - start < timeout){
     await new Promise(r=>setTimeout(r, 1000));
-    const st = await fetch(apiBase + '/nfc/command/status/' + task.id);
+    const st = await apiFetch(apiBase + '/nfc/command/status/' + task.id);
     const body = await st.json();
     if(body.status && body.status !== 'pending' && body.status !== 'sent'){
       let display = body.result || body.status;
@@ -217,6 +301,83 @@ async function triggerScan(){
   status.textContent = '⏱️ 超时：设备未返回结果';
 }
 
+async function triggerEnroll(){
+  const deviceId = document.getElementById('enrollDeviceSelect').value;
+  const userId = document.getElementById('userSelect').value;
+  const status = document.getElementById('scanStatus');
+
+  if(!deviceId){
+    showAlert('请先选择“录入卡片设备”', 'danger');
+    return;
+  }
+  if(!userId){
+    showAlert('请先在下方选择要绑定的用户', 'danger');
+    return;
+  }
+
+  status.textContent = '📝 已下发 ENROLL，等待刷卡...';
+
+  try {
+    const createRes = await apiFetch(apiBase + '/nfc/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId, command: 'ENROLL' })
+    });
+    const created = await parseJsonSafe(createRes);
+    if(!createRes.ok){
+      throw new Error(extractErrorMessage(created, '下发 ENROLL 失败'));
+    }
+
+    const taskId = created && created.id;
+    if(!taskId) throw new Error('任务创建成功但缺少任务ID');
+
+    const timeoutMs = 15000;
+    const start = Date.now();
+    let done = null;
+
+    while(Date.now() - start < timeoutMs){
+      await new Promise(r => setTimeout(r, 1000));
+      const remain = Math.ceil((timeoutMs - (Date.now() - start)) / 1000);
+      status.textContent = `📝 等待刷卡... 剩余 ${Math.max(remain, 0)} 秒`;
+
+      const stRes = await apiFetch(apiBase + '/nfc/command/status/' + taskId);
+      const stBody = await parseJsonSafe(stRes);
+      if(!stRes.ok){
+        throw new Error(extractErrorMessage(stBody, '查询任务状态失败'));
+      }
+      if(stBody && stBody.result){
+        done = stBody;
+        break;
+      }
+    }
+
+    if(!done){
+      throw new Error('录入超时，请重试');
+    }
+
+    let cardUid = '';
+    try {
+      const parsed = JSON.parse(done.result || '{}');
+      cardUid = parsed.card_uid || parsed.uid || parsed.card_number || '';
+    } catch (_) {
+      cardUid = '';
+    }
+
+    if(!cardUid){
+      throw new Error('任务完成但未返回卡号');
+    }
+
+    const cardInput = document.getElementById('cardNumber');
+    if(cardInput) cardInput.value = cardUid;
+
+    status.textContent = `✅ 读卡成功：${cardUid}`;
+    showResult(`录入成功，卡号已自动填入新增表单：${cardUid}`);
+  } catch (e) {
+    status.textContent = `❌ ${e.message}`;
+    showAlert(e.message || '录入失败', 'danger');
+  }
+}
+
 function showResult(text){
   const card = document.getElementById('resultCard');
   const txt = document.getElementById('resultText');
@@ -239,6 +400,7 @@ document.getElementById('editModal')?.addEventListener('click', (e)=>{
 window.addEventListener('load', async ()=>{
   document.getElementById('createForm').addEventListener('submit', createCard);
   document.getElementById('btnScan').addEventListener('click', triggerScan);
+  document.getElementById('btnEnroll').addEventListener('click', triggerEnroll);
   document.getElementById('refreshDevices').addEventListener('click', fetchDevices);
   await fetchUsers();
   await fetchDevices();

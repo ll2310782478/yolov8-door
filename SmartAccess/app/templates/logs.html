@@ -46,7 +46,7 @@
   <script src="/static/js/common.js"></script>
   <script>
     window.addEventListener('DOMContentLoaded', async () => {
-      const token = localStorage.getItem('token');
+      const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
       if (!token) {
         window.location.href = '/web/auth';
         return;
@@ -207,7 +207,7 @@
 
     <script>
 
-    const token = localStorage.getItem('token');
+    const token = (window.getStoredToken ? window.getStoredToken() : localStorage.getItem('token'));
         const username = localStorage.getItem('username');
         if (!token) { 
             window.location.href = '/web/auth'; 
@@ -254,6 +254,14 @@
             
             try {
                 const res = await fetch(url, { headers: authHeaders() });
+                if (res.status === 401) {
+                  localStorage.removeItem('token');
+                  localStorage.removeItem('access_token');
+                  sessionStorage.removeItem('token');
+                  sessionStorage.removeItem('access_token');
+                  window.location.href = '/web/auth';
+                  return;
+                }
                 
                 // 检查响应状态
                 if (!res.ok) {
@@ -308,6 +316,14 @@
             
             try {
                 const res = await fetch(url, { headers: authHeaders() });
+                if (res.status === 401) {
+                  localStorage.removeItem('token');
+                  localStorage.removeItem('access_token');
+                  sessionStorage.removeItem('token');
+                  sessionStorage.removeItem('access_token');
+                  window.location.href = '/web/auth';
+                  return;
+                }
                 
                 // 检查响应状态
                 if (!res.ok) {

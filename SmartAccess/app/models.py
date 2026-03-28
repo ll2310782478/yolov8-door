@@ -113,6 +113,7 @@ class BluetoothBinding(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     device_id = Column(String(50), index=True, nullable=False)  # 蓝牙设备 ID/MAC 地址
+    controller_device_id = Column(String(50), nullable=True, index=True)  # 绑定的门禁控制器设备ID，空表示所有设备
     device_name = Column(String(100))  # 设备名称
     is_paired = Column(Boolean, default=False)  # 是否已配对
     is_active = Column(Boolean, default=True)  # 是否启用此绑定
