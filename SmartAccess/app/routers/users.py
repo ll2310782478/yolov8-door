@@ -1,7 +1,7 @@
 """用户/人脸/权限管理路由 - 增强版（集成 face_access-v2）"""
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, noload
 from app.database import get_db
 from app.models import User, FaceData, Role, UserPermission
 from app.utils import (
@@ -31,18 +31,18 @@ router = APIRouter(
 class UserCreate(BaseModel):
     username: str
     password: str
-    email: str = None
-    phone: str = None
-    full_name: str = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    full_name: Optional[str] = None
     user_role: str = "access_user"  # admin, access_user
 
 
 class UserUpdate(BaseModel):
-    email: str = None
-    phone: str = None
-    full_name: str = None
-    is_active: bool = None
-    user_role: str = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    full_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    user_role: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -117,7 +117,8 @@ def list_users(
     current_user: TokenData = Depends(require_role("admin"))
 ):
     """获取用户列表（仅管理员）"""
-    query = db.query(User)
+    # 使用 noload 防止加载包含二进制数据的关系
+    query = db.query(User).options(noload(User.faces))
     
     if is_active is not None:
         query = query.filter(User.is_active == is_active)
@@ -129,7 +130,8 @@ def list_users(
 @router.get("/{user_id}", response_model=UserResponse)
 def get_user(user_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """获取用户详情（仅管理员）"""
-    user = db.query(User).filter(User.id == user_id).first()
+    # 使用 noload 防止加载包含二进制数据的关系
+    user = db.query(User).options(noload(User.faces)).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
     return user
@@ -168,14 +170,15 @@ def create_user(user: UserCreate, db: Session = Depends(get_db), current_user: T
         db.add(perm)
     
     db.commit()
-    db.refresh(db_user)
+    # 重新加载用户，但排除faces关系
+    db_user = db.query(User).options(noload(User.faces)).filter(User.id == db_user.id).first()
     return db_user
 
 
 @router.put("/{user_id}", response_model=UserResponse)
 def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """更新用户信息（仅管理员）"""
-    db_user = db.query(User).filter(User.id == user_id).first()
+    db_user = db.query(User).options(noload(User.faces)).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
     

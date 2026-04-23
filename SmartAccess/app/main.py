@@ -120,6 +120,9 @@ async def general_exception_handler(request: Request, exc: Exception):
     # 记录详细错误日志
     error_trace = traceback.format_exc()
     print(f"❌ Unhandled Exception: {error_trace}")
+    print(f"\n异常类型: {type(exc)}")
+    print(f"异常信息: {exc}")
+    print(f"异常值: {exc!r}")  # 打印完整的repr
     
     return JSONResponse(
         status_code=500,
@@ -127,8 +130,9 @@ async def general_exception_handler(request: Request, exc: Exception):
             "success": False,
             "error": {
                 "code": 500,
-                "message": f"发生未知错误：{str(exc)}",
-                "type": "GeneralException"
+                "message": f"发生未知错误：{str(exc)[:200]}",  # 限制长度
+                "type": "GeneralException",
+                "exception_type": type(exc).__name__
             }
         }
     )

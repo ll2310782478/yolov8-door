@@ -1,7 +1,8 @@
 """认证路由 - 管理员登录"""
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from sqlalchemy.orm import Session
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session, noload
 from datetime import timedelta
 from typing import Optional
 from pydantic import BaseModel, EmailStr
@@ -38,7 +39,7 @@ class RegisterResponse(BaseModel):
     data: Optional[dict] = None
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login")
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """
     管理员登录端点
@@ -52,8 +53,10 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
     }
     ```
     """
-    # 查询用户
-    user = db.query(User).filter(User.username == request.username).first()
+    username = request.username
+    password = request.password
+    # 查询用户（防止加载包含二进制数据的关系）
+    user = db.query(User).options(noload(User.faces)).filter(User.username == username).first()
     
     if not user:
         raise HTTPException(
@@ -62,8 +65,8 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # 验证密码
-    if not verify_password(request.password, user.password_hash):
+    # 验证密码（支持 bcrypt hash 及明文兜底）
+    if not verify_password(password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
@@ -84,14 +87,19 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
         expires_delta=access_token_expires
     )
     
-    return LoginResponse(
-        code=200,
-        message="登录成功",
-        data=Token(
-            access_token=access_token,
-            token_type="bearer",
-            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
-        )
+    # 直接返回JSON而不使用response_model以避免Pydantic序列化问题
+    return JSONResponse(
+        status_code=200,
+        content={
+            "code": 200,
+            "message": "登录成功",
+            "data": {
+                "access_token": access_token,
+                "token_type": "bearer",
+                "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                "username": user.username
+            }
+        }
     )
 
 
@@ -107,7 +115,7 @@ async def register(
     注册后账户默认为待审核状态（is_active=False），需管理员审核激活并分配角色。
     """
     # 用户名重复检查
-    existing_user = db.query(User).filter(User.username == request.username).first()
+    existing_user = db.query(User).options(noload(User.faces)).filter(User.username == request.username).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -116,7 +124,7 @@ async def register(
 
     # 邮箱重复检查（如果填写）
     if request.email:
-        email_used = db.query(User).filter(User.email == request.email).first()
+        email_used = db.query(User).options(noload(User.faces)).filter(User.email == request.email).first()
         if email_used:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -184,7 +192,7 @@ async def get_me(request: Request, db: Session = Depends(get_db)):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    user = db.query(User).filter(User.username == token_data.username).first()
+    user = db.query(User).options(noload(User.faces)).filter(User.username == token_data.username).first()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

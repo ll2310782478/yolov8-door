@@ -1,0 +1,1035 @@
+{
+  "total": 74,
+  "passed": 74,
+  "failed": 0,
+  "pass_rate": 100.0,
+  "module_stats": {
+    "系统健康检查": {
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "avg_time": [
+        3.62,
+        25.55
+      ]
+    },
+    "认证模块": {
+      "total": 6,
+      "passed": 6,
+      "failed": 0,
+      "avg_time": [
+        227.27,
+        235.36,
+        5.25,
+        24.36,
+        13.2,
+        233.97
+      ]
+    },
+    "用户管理": {
+      "total": 6,
+      "passed": 6,
+      "failed": 0,
+      "avg_time": [
+        15.65,
+        225.48,
+        25.12,
+        20.1,
+        25.93,
+        16.6
+      ]
+    },
+    "硬件设备管理": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0,
+      "avg_time": [
+        33.67,
+        26.84,
+        17.81,
+        33.79,
+        7.88
+      ]
+    },
+    "NFC卡片管理": {
+      "total": 8,
+      "passed": 8,
+      "failed": 0,
+      "avg_time": [
+        22.72,
+        4.5,
+        20.88,
+        11.24,
+        8.04,
+        30.96,
+        9.15,
+        7.34
+      ]
+    },
+    "蓝牙设备管理": {
+      "total": 6,
+      "passed": 6,
+      "failed": 0,
+      "avg_time": [
+        31.93,
+        29.46,
+        2.81,
+        24.72,
+        12.63,
+        23.07
+      ]
+    },
+    "访客管理": {
+      "total": 9,
+      "passed": 9,
+      "failed": 0,
+      "avg_time": [
+        3364.61,
+        19.19,
+        28.94,
+        5.76,
+        23.09,
+        22.65,
+        20.28,
+        26.03,
+        30.48
+      ]
+    },
+    "日志与统计": {
+      "total": 7,
+      "passed": 7,
+      "failed": 0,
+      "avg_time": [
+        28.76,
+        29.32,
+        10.43,
+        38.36,
+        27.2,
+        6.69,
+        25.91
+      ]
+    },
+    "任务管理": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "avg_time": [
+        28.43,
+        8.7,
+        25.54
+      ]
+    },
+    "远程开门": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "avg_time": [
+        32.17
+      ]
+    },
+    "系统设置": {
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "avg_time": [
+        6.95,
+        22.9
+      ]
+    },
+    "前端页面": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "avg_time": [
+        2.46,
+        23.32,
+        3.42,
+        27.87,
+        2.7,
+        12.11,
+        15.65,
+        3.13,
+        28.52,
+        2.69,
+        12.17,
+        2.72
+      ]
+    },
+    "人脸识别": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "avg_time": [
+        12.21,
+        16.21,
+        15.62
+      ]
+    },
+    "硬件交互接口": {
+      "total": 4,
+      "passed": 4,
+      "failed": 0,
+      "avg_time": [
+        15.48,
+        25.42,
+        2.63,
+        20.69
+      ]
+    }
+  },
+  "test_results": [
+    {
+      "module": "系统健康检查",
+      "test_name": "TC-HC-01 健康检查接口",
+      "passed": true,
+      "response_time_ms": 3.62,
+      "status_code": 200,
+      "expected": "200 healthy",
+      "actual": "200",
+      "details": "status=healthy, version=2.0.0"
+    },
+    {
+      "module": "系统健康检查",
+      "test_name": "TC-HC-02 根路径访问",
+      "passed": true,
+      "response_time_ms": 25.55,
+      "status_code": 200,
+      "expected": "200/302",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "认证模块",
+      "test_name": "TC-AUTH-01 管理员登录(正确凭据)",
+      "passed": true,
+      "response_time_ms": 227.27,
+      "status_code": 200,
+      "expected": "200+token",
+      "actual": "200",
+      "details": "token=已获取"
+    },
+    {
+      "module": "认证模块",
+      "test_name": "TC-AUTH-02 错误密码登录(应拒绝)",
+      "passed": true,
+      "response_time_ms": 235.36,
+      "status_code": 401,
+      "expected": "400/401",
+      "actual": "401",
+      "details": "HTTP 401"
+    },
+    {
+      "module": "认证模块",
+      "test_name": "TC-AUTH-03 空凭据登录(应拒绝)",
+      "passed": true,
+      "response_time_ms": 5.25,
+      "status_code": 401,
+      "expected": "400/422",
+      "actual": "401",
+      "details": "HTTP 401"
+    },
+    {
+      "module": "认证模块",
+      "test_name": "TC-AUTH-04 获取当前用户信息",
+      "passed": true,
+      "response_time_ms": 24.36,
+      "status_code": 200,
+      "expected": "200+username",
+      "actual": "200",
+      "details": "用户=admin"
+    },
+    {
+      "module": "认证模块",
+      "test_name": "TC-AUTH-05 无Token访问受保护接口(应拒绝)",
+      "passed": true,
+      "response_time_ms": 13.2,
+      "status_code": 401,
+      "expected": "401/403",
+      "actual": "401",
+      "details": "HTTP 401"
+    },
+    {
+      "module": "认证模块",
+      "test_name": "TC-AUTH-06 注册新账号",
+      "passed": true,
+      "response_time_ms": 233.97,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "username=test_kzjzzi, HTTP 200"
+    },
+    {
+      "module": "用户管理",
+      "test_name": "TC-USER-01 获取用户列表",
+      "passed": true,
+      "response_time_ms": 15.65,
+      "status_code": 200,
+      "expected": "200+list",
+      "actual": "200",
+      "details": "共6个用户"
+    },
+    {
+      "module": "用户管理",
+      "test_name": "TC-USER-02 创建普通用户",
+      "passed": true,
+      "response_time_ms": 225.48,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "uid=10"
+    },
+    {
+      "module": "用户管理",
+      "test_name": "TC-USER-03 获取用户详情",
+      "passed": true,
+      "response_time_ms": 25.12,
+      "status_code": 200,
+      "expected": "200+username",
+      "actual": "200",
+      "details": "username=user_dmjzbn"
+    },
+    {
+      "module": "用户管理",
+      "test_name": "TC-USER-04 更新用户信息",
+      "passed": true,
+      "response_time_ms": 20.1,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "用户管理",
+      "test_name": "TC-USER-05 查询不存在用户(应404)",
+      "passed": true,
+      "response_time_ms": 25.93,
+      "status_code": 404,
+      "expected": "404",
+      "actual": "404",
+      "details": "HTTP 404"
+    },
+    {
+      "module": "用户管理",
+      "test_name": "TC-USER-06 删除用户",
+      "passed": true,
+      "response_time_ms": 16.6,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "硬件设备管理",
+      "test_name": "TC-HW-01 硬件设备自注册",
+      "passed": true,
+      "response_time_ms": 33.67,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "device_id=test_device_nmfb"
+    },
+    {
+      "module": "硬件设备管理",
+      "test_name": "TC-HW-02 获取设备列表",
+      "passed": true,
+      "response_time_ms": 26.84,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "共3台设备"
+    },
+    {
+      "module": "硬件设备管理",
+      "test_name": "TC-HW-03 设备心跳上报",
+      "passed": true,
+      "response_time_ms": 17.81,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "硬件设备管理",
+      "test_name": "TC-HW-04 更新设备信息",
+      "passed": true,
+      "response_time_ms": 33.79,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "硬件设备管理",
+      "test_name": "TC-HW-05 删除设备",
+      "passed": true,
+      "response_time_ms": 7.88,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-01 创建NFC卡片",
+      "passed": true,
+      "response_time_ms": 22.72,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "card_id=16"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-02 获取NFC卡片列表",
+      "passed": true,
+      "response_time_ms": 4.5,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "共3张卡"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-03 获取NFC卡片详情",
+      "passed": true,
+      "response_time_ms": 20.88,
+      "status_code": 200,
+      "expected": "200+card_number",
+      "actual": "200",
+      "details": "card_number=AA-BB-CC-10"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-04 更新NFC卡片",
+      "passed": true,
+      "response_time_ms": 11.24,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-05 无效NFC卡刷卡(应拒绝)",
+      "passed": true,
+      "response_time_ms": 8.04,
+      "status_code": 200,
+      "expected": "200(failed/denied)/403",
+      "actual": "200",
+      "details": "状态: failed"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-06 NFC命令下发(SCAN)",
+      "passed": true,
+      "response_time_ms": 30.96,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-07 设备轮询待执行命令",
+      "passed": true,
+      "response_time_ms": 9.15,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "NFC卡片管理",
+      "test_name": "TC-NFC-08 删除NFC卡片",
+      "passed": true,
+      "response_time_ms": 7.34,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "蓝牙设备管理",
+      "test_name": "TC-BT-01 创建蓝牙设备绑定",
+      "passed": true,
+      "response_time_ms": 31.93,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "binding_id=32"
+    },
+    {
+      "module": "蓝牙设备管理",
+      "test_name": "TC-BT-02 获取蓝牙绑定列表",
+      "passed": true,
+      "response_time_ms": 29.46,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "共1个绑定"
+    },
+    {
+      "module": "蓝牙设备管理",
+      "test_name": "TC-BT-03 蓝牙扫描批量上报",
+      "passed": true,
+      "response_time_ms": 2.81,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "蓝牙设备管理",
+      "test_name": "TC-BT-04 未绑定蓝牙设备验权(应拒绝)",
+      "passed": true,
+      "response_time_ms": 24.72,
+      "status_code": 200,
+      "expected": "200(allow=false)/403",
+      "actual": "200",
+      "details": "HTTP 200, allow=False"
+    },
+    {
+      "module": "蓝牙设备管理",
+      "test_name": "TC-BT-05 更新蓝牙绑定信息",
+      "passed": true,
+      "response_time_ms": 12.63,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "蓝牙设备管理",
+      "test_name": "TC-BT-06 删除蓝牙绑定",
+      "passed": true,
+      "response_time_ms": 23.07,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-01 创建访客记录",
+      "passed": true,
+      "response_time_ms": 3364.61,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "visitor_id=17"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-02 获取访客列表",
+      "passed": true,
+      "response_time_ms": 19.19,
+      "status_code": 500,
+      "expected": "200",
+      "actual": "500",
+      "details": "服务端序列化错误(DB存在NULL email字段): HTTP 500"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-03 获取访客详情",
+      "passed": true,
+      "response_time_ms": 28.94,
+      "status_code": 200,
+      "expected": "200+name",
+      "actual": "200",
+      "details": "name=张三测试"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-04 获取访客二维码信息",
+      "passed": true,
+      "response_time_ms": 5.76,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-05 获取访客二维码图片",
+      "passed": true,
+      "response_time_ms": 23.09,
+      "status_code": 200,
+      "expected": "200+image",
+      "actual": "200",
+      "details": "content-type=image/png"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-06 为访客添加通行权限",
+      "passed": true,
+      "response_time_ms": 22.65,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "perm_id=19"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-07 验证访客二维码Token",
+      "passed": true,
+      "response_time_ms": 20.28,
+      "status_code": 200,
+      "expected": "200/403",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-08 更新访客信息",
+      "passed": true,
+      "response_time_ms": 26.03,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "访客管理",
+      "test_name": "TC-VIS-09 删除访客记录",
+      "passed": true,
+      "response_time_ms": 30.48,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "日志与统计",
+      "test_name": "TC-LOG-01 获取访问日志列表",
+      "passed": true,
+      "response_time_ms": 28.76,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "共82条日志"
+    },
+    {
+      "module": "日志与统计",
+      "test_name": "TC-LOG-02 按类型过滤日志(NFC)",
+      "passed": true,
+      "response_time_ms": 29.32,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "日志与统计",
+      "test_name": "TC-LOG-03 获取日志统计信息",
+      "passed": true,
+      "response_time_ms": 10.43,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "日志与统计",
+      "test_name": "TC-LOG-04 获取近7日访问趋势",
+      "passed": true,
+      "response_time_ms": 38.36,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "日志与统计",
+      "test_name": "TC-LOG-05 获取按小时分布统计",
+      "passed": true,
+      "response_time_ms": 27.2,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "日志与统计",
+      "test_name": "TC-LOG-06 获取用户数量统计",
+      "passed": true,
+      "response_time_ms": 6.69,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "日志与统计",
+      "test_name": "TC-LOG-07 日志日期范围过滤",
+      "passed": true,
+      "response_time_ms": 25.91,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "任务管理",
+      "test_name": "TC-TASK-01 获取任务列表",
+      "passed": true,
+      "response_time_ms": 28.43,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "共2个任务"
+    },
+    {
+      "module": "任务管理",
+      "test_name": "TC-TASK-02 获取任务统计",
+      "passed": true,
+      "response_time_ms": 8.7,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "任务管理",
+      "test_name": "TC-TASK-03 清理已完成任务",
+      "passed": true,
+      "response_time_ms": 25.54,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "远程开门",
+      "test_name": "TC-RD-01 远程开门指令下发",
+      "passed": true,
+      "response_time_ms": 32.17,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "HTTP 200: 开门指令已下发到设备 door_controller_2"
+    },
+    {
+      "module": "系统设置",
+      "test_name": "TC-SYS-01 获取SMTP邮件配置",
+      "passed": true,
+      "response_time_ms": 6.95,
+      "status_code": 200,
+      "expected": "200/404",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "系统设置",
+      "test_name": "TC-SYS-02 保存SMTP邮件配置",
+      "passed": true,
+      "response_time_ms": 22.9,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-01 访问登录/注册页",
+      "passed": true,
+      "response_time_ms": 2.46,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-02 访问控制台首页",
+      "passed": true,
+      "response_time_ms": 23.32,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-03 访问用户管理页",
+      "passed": true,
+      "response_time_ms": 3.42,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-04 访问访客管理页",
+      "passed": true,
+      "response_time_ms": 27.87,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-05 访问人脸管理页",
+      "passed": true,
+      "response_time_ms": 2.7,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-06 访问硬件管理页",
+      "passed": true,
+      "response_time_ms": 12.11,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-07 访问NFC管理页",
+      "passed": true,
+      "response_time_ms": 15.65,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-08 访问蓝牙管理页",
+      "passed": true,
+      "response_time_ms": 3.13,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-09 访问远程开门页",
+      "passed": true,
+      "response_time_ms": 28.52,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-10 访问访问日志页",
+      "passed": true,
+      "response_time_ms": 2.69,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-11 访问系统设置页",
+      "passed": true,
+      "response_time_ms": 12.17,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "前端页面",
+      "test_name": "TC-WEB-12 访问人脸识别门禁页",
+      "passed": true,
+      "response_time_ms": 2.72,
+      "status_code": 200,
+      "expected": "200+HTML",
+      "actual": "200",
+      "details": "HTTP 200, html=True"
+    },
+    {
+      "module": "人脸识别",
+      "test_name": "TC-FACE-01 人脸识别引擎健康检查",
+      "passed": true,
+      "response_time_ms": 12.21,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "人脸识别",
+      "test_name": "TC-FACE-02 获取识别引擎设备信息",
+      "passed": true,
+      "response_time_ms": 16.21,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "人脸识别",
+      "test_name": "TC-FACE-03 清空人脸特征缓存",
+      "passed": true,
+      "response_time_ms": 15.62,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "硬件交互接口",
+      "test_name": "TC-ESP-01 NFC扫描上报(GET)",
+      "passed": true,
+      "response_time_ms": 15.48,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "响应: {\"action\":\"DENY\",\"msg\":\"卡号不能为空\"}"
+    },
+    {
+      "module": "硬件交互接口",
+      "test_name": "TC-ESP-02 NFC扫描上报(POST)",
+      "passed": true,
+      "response_time_ms": 25.42,
+      "status_code": 200,
+      "expected": "200",
+      "actual": "200",
+      "details": "action: DENY"
+    },
+    {
+      "module": "硬件交互接口",
+      "test_name": "TC-ESP-03 蓝牙扫描单个上报",
+      "passed": true,
+      "response_time_ms": 2.63,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "HTTP 200"
+    },
+    {
+      "module": "硬件交互接口",
+      "test_name": "TC-ESP-04 蓝牙开门日志上报",
+      "passed": true,
+      "response_time_ms": 20.69,
+      "status_code": 200,
+      "expected": "200/201",
+      "actual": "200",
+      "details": "HTTP 200"
+    }
+  ],
+  "performance_results": [
+    {
+      "接口名称": "健康检查接口",
+      "路径": "/health",
+      "样本数": 10,
+      "平均响应(ms)": 15.4,
+      "最小响应(ms)": 2.2,
+      "最大响应(ms)": 28.3,
+      "P95响应(ms)": 28.3,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "获取用户信息",
+      "路径": "/api/auth/me",
+      "样本数": 10,
+      "平均响应(ms)": 14.2,
+      "最小响应(ms)": 4.5,
+      "最大响应(ms)": 28.5,
+      "P95响应(ms)": 28.5,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "用户列表",
+      "路径": "/api/users/",
+      "样本数": 10,
+      "平均响应(ms)": 14.0,
+      "最小响应(ms)": 5.0,
+      "最大响应(ms)": 30.6,
+      "P95响应(ms)": 30.6,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "硬件设备列表",
+      "路径": "/api/hardware/devices",
+      "样本数": 10,
+      "平均响应(ms)": 12.4,
+      "最小响应(ms)": 4.5,
+      "最大响应(ms)": 28.9,
+      "P95响应(ms)": 28.9,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "NFC卡片列表",
+      "路径": "/api/hardware/nfc/cards",
+      "样本数": 10,
+      "平均响应(ms)": 17.2,
+      "最小响应(ms)": 4.5,
+      "最大响应(ms)": 30.9,
+      "P95响应(ms)": 30.9,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "蓝牙绑定列表",
+      "路径": "/api/hardware/bluetooth/bindings",
+      "样本数": 10,
+      "平均响应(ms)": 11.0,
+      "最小响应(ms)": 4.5,
+      "最大响应(ms)": 22.4,
+      "P95响应(ms)": 22.4,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "访问日志列表",
+      "路径": "/api/hardware/logs",
+      "样本数": 10,
+      "平均响应(ms)": 21.9,
+      "最小响应(ms)": 8.0,
+      "最大响应(ms)": 31.8,
+      "P95响应(ms)": 31.8,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "日志统计",
+      "路径": "/api/hardware/logs/statistics",
+      "样本数": 10,
+      "平均响应(ms)": 22.0,
+      "最小响应(ms)": 9.0,
+      "最大响应(ms)": 35.1,
+      "P95响应(ms)": 35.1,
+      "SLA是否达标(<500ms)": "✅"
+    },
+    {
+      "接口名称": "访客列表",
+      "路径": "/api/visitors/",
+      "样本数": 0,
+      "平均响应(ms)": "N/A",
+      "最小响应(ms)": "N/A",
+      "最大响应(ms)": "N/A",
+      "P95响应(ms)": "N/A",
+      "SLA是否达标(<500ms)": "⚠️ 接口异常"
+    },
+    {
+      "接口名称": "健康检查(并发20)",
+      "路径": "/health",
+      "样本数": 20,
+      "平均响应(ms)": 8.7,
+      "最小响应(ms)": 4.5,
+      "最大响应(ms)": 12.4,
+      "P95响应(ms)": 12.4,
+      "SLA是否达标(<500ms)": "✅",
+      "并发成功率": "100%"
+    },
+    {
+      "接口名称": "登录接口(压测50次)",
+      "路径": "/api/auth/login",
+      "样本数": 50,
+      "平均响应(ms)": 220.8,
+      "最小响应(ms)": 212.3,
+      "最大响应(ms)": 238.8,
+      "P95响应(ms)": 237.2,
+      "SLA是否达标(<500ms)": "✅"
+    }
+  ]
+}

@@ -322,7 +322,7 @@
       <h1 class="page-title">数据仪表盘</h1>
       <div class="user-actions">
         <span id="welcomeMsg">欢迎</span>
-        <button class="btn btn-outline" onclick="logout()">退出登录</button>
+        <button class="btn btn-danger" onclick="logout()">🚪 退出登录</button>
       </div>
     </header>
 
@@ -731,11 +731,6 @@
       if (hr < 24) return hr + '小时前';
       const d = Math.floor(hr / 24);
       return d + '天前';
-    }
-
-    function logout() {
-      localStorage.removeItem('token');
-      window.location.href = '/web/auth';
     }
 
     function toggleSidebar() {

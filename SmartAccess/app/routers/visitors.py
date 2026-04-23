@@ -1,7 +1,7 @@
 """访客与二维码管理路由 - 增强版"""
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models import Visitor, VisitorPermission, AccessLog, SystemConfig
 from app.utils import check_permission_valid, delete_file
@@ -14,10 +14,11 @@ import qrcode
 import os
 import uuid
 import secrets
-import yagmail
 import io
 import logging
 import smtplib
+from email.message import EmailMessage
+import mimetypes
 
 router = APIRouter(
     prefix="/api/visitors",
@@ -26,6 +27,7 @@ router = APIRouter(
 )
 
 logger = logging.getLogger(__name__)
+SMTP_TIMEOUT_SECONDS = 20
 
 
 # ==================== Pydantic 模型 ====================
@@ -56,14 +58,14 @@ class VisitorUpdate(BaseModel):
 class VisitorResponse(BaseModel):
     id: int
     name: str
-    phone: str = None
-    email: str = None
-    company: str = None
-    purpose: str = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    company: Optional[str] = None
+    purpose: Optional[str] = None
     check_in_time: datetime
     check_out_time: Optional[datetime] = None
     is_checked_out: bool
-    qr_code_path: str = None
+    qr_code_path: Optional[str] = None
     qr_code_expires_at: Optional[datetime] = None
     max_duration_hours: int
     created_at: datetime
@@ -167,6 +169,17 @@ def _normalize_security(port: int, security: Optional[str]) -> str:
     return mode
 
 
+def _security_candidates(port: int, security: Optional[str]) -> List[str]:
+    """为邮件发送生成协议候选顺序，auto 模式下先按常规端口，再尝试兜底。"""
+    mode = (security or "auto").strip().lower()
+    if mode in {"ssl", "starttls"}:
+        return [mode]
+
+    preferred = _normalize_security(port, security)
+    fallback = "ssl" if preferred == "starttls" else "starttls"
+    return [preferred, fallback]
+
+
 def _build_mail_channels(db: Session) -> List[dict]:
     channels: List[dict] = []
 
@@ -199,18 +212,58 @@ def _build_mail_channels(db: Session) -> List[dict]:
     return channels
 
 
-def _send_mail_via_channel(channel: dict, to: str, subject: str, body: str, attachment_path: str):
-    mode = _normalize_security(channel["port"], channel.get("security"))
-    smtp_kwargs = {
-        "user": channel["user"],
-        "password": channel["password"],
-        "host": channel["host"],
-        "port": int(channel["port"]),
-        "smtp_ssl": mode == "ssl",
-        "smtp_starttls": mode == "starttls",
-    }
-    yag = yagmail.SMTP(**smtp_kwargs)
-    yag.send(to=to, subject=subject, contents=[body, attachment_path])
+def _build_email_message(from_addr: str, to: str, subject: str, body: str, attachment_path: Optional[str] = None) -> EmailMessage:
+    msg = EmailMessage()
+    msg["From"] = from_addr
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content("请使用支持HTML的邮件客户端查看此邮件。")
+    msg.add_alternative(body, subtype="html")
+
+    if attachment_path:
+        if not os.path.exists(attachment_path):
+            raise FileNotFoundError(f"附件文件不存在: {attachment_path}")
+        mime_type, _ = mimetypes.guess_type(attachment_path)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+        main_type, sub_type = mime_type.split("/", 1)
+        with open(attachment_path, "rb") as f:
+            msg.add_attachment(
+                f.read(),
+                maintype=main_type,
+                subtype=sub_type,
+                filename=os.path.basename(attachment_path),
+            )
+
+    return msg
+
+
+def _send_mail_via_channel(channel: dict, to: str, subject: str, body: str, attachment_path: Optional[str] = None):
+    host = channel["host"]
+    port = int(channel["port"])
+    user = channel["user"]
+    password = channel["password"]
+    message = _build_email_message(user, to, subject, body, attachment_path)
+
+    errors: List[str] = []
+    for mode in _security_candidates(port, channel.get("security")):
+        try:
+            if mode == "ssl":
+                with smtplib.SMTP_SSL(host=host, port=port, timeout=SMTP_TIMEOUT_SECONDS) as server:
+                    server.login(user, password)
+                    server.send_message(message)
+            else:
+                with smtplib.SMTP(host=host, port=port, timeout=SMTP_TIMEOUT_SECONDS) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(user, password)
+                    server.send_message(message)
+            return
+        except Exception as e:
+            errors.append(f"{mode}: {type(e).__name__} - {str(e)}")
+
+    raise RuntimeError(" | ".join(errors) if errors else "SMTP发送失败")
 
 
 def send_qrcode_email_internal(visitor: Visitor, permission: VisitorPermission, db: Session) -> dict:
@@ -405,7 +458,7 @@ def list_visitors(
     current_user: TokenData = Depends(require_role("admin"))
 ):
     """获取访客列表（仅管理员）"""
-    query = db.query(Visitor)
+    query = db.query(Visitor).options(joinedload(Visitor.visitor_permissions))
     
     if is_checked_out is not None:
         query = query.filter(Visitor.is_checked_out == is_checked_out)
@@ -419,7 +472,7 @@ def list_visitors(
 @router.get("/{visitor_id}", response_model=VisitorResponse)
 def get_visitor(visitor_id: int, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """获取访客详情（仅管理员）"""
-    visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
+    visitor = db.query(Visitor).options(joinedload(Visitor.visitor_permissions)).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
     return visitor
@@ -428,7 +481,7 @@ def get_visitor(visitor_id: int, db: Session = Depends(get_db), current_user: To
 @router.put("/{visitor_id}", response_model=VisitorResponse)
 def update_visitor(visitor_id: int, visitor_update: VisitorUpdate, db: Session = Depends(get_db), current_user: TokenData = Depends(require_role("admin"))):
     """更新访客信息（仅管理员）"""
-    visitor = db.query(Visitor).filter(Visitor.id == visitor_id).first()
+    visitor = db.query(Visitor).options(joinedload(Visitor.visitor_permissions)).filter(Visitor.id == visitor_id).first()
     if not visitor:
         raise HTTPException(status_code=404, detail="访客不存在")
     
@@ -829,22 +882,9 @@ class TestEmailRequest(BaseModel):
 def test_email_send(request: TestEmailRequest, db: Session = Depends(get_db)):
     """测试邮件发送功能"""
     try:
-        # 从数据库获取邮件配置
-        smtp_user_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_user").first()
-        smtp_pass_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_password").first()
-        smtp_host_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_host").first()
-        smtp_port_cfg = db.query(SystemConfig).filter(SystemConfig.key == "smtp_port").first()
-
-        smtp_user = smtp_user_cfg.value if smtp_user_cfg else os.getenv("SMTP_USER")
-        smtp_password = smtp_pass_cfg.value if smtp_pass_cfg else os.getenv("SMTP_PASSWORD")
-        smtp_host = smtp_host_cfg.value if smtp_host_cfg else "smtp.gmail.com"
-        smtp_port = smtp_port_cfg.value if smtp_port_cfg else "587"
-
-        if not smtp_user or not smtp_password:
-            raise HTTPException(status_code=400, detail="邮件服务器未配置，请先运行 configure_smtp.py 配置邮件服务")
-
-        # 初始化yagmail
-        yag = yagmail.SMTP(user=smtp_user, password=smtp_password, host=smtp_host, port=int(smtp_port))
+        channels = _build_mail_channels(db)
+        if not channels:
+            raise HTTPException(status_code=400, detail="邮件服务器未配置，请先在设置中配置邮件服务")
 
         # 发送测试邮件
         subject = "SmartAccess 邮件测试"
@@ -863,22 +903,38 @@ def test_email_send(request: TestEmailRequest, db: Session = Depends(get_db)):
         </html>
         """
 
-        yag.send(
-            to=request.email,
-            subject=subject,
-            contents=body
-        )
+        errors: List[str] = []
+        used_channel = None
+        for channel in channels:
+            try:
+                _send_mail_via_channel(
+                    channel=channel,
+                    to=request.email,
+                    subject=subject,
+                    body=body,
+                    attachment_path=None,
+                )
+                used_channel = channel
+                break
+            except Exception as e:
+                errors.append(f"{channel['name']}: {type(e).__name__} - {str(e)}")
+
+        if not used_channel:
+            raise HTTPException(status_code=502, detail="; ".join(errors) if errors else "测试邮件发送失败")
 
         return {
             "status": "success",
             "message": f"测试邮件已发送到 {request.email}",
             "smtp_config": {
-                "host": smtp_host,
-                "port": smtp_port,
-                "user": smtp_user
+                "host": used_channel["host"],
+                "port": str(used_channel["port"]),
+                "user": used_channel["user"],
+                "security": used_channel.get("security", "auto"),
             }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"邮件发送失败: {str(e)}")
 
